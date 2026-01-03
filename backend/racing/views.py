@@ -85,11 +85,19 @@ def run_scraper_background():
 @csrf_exempt
 def get_ai_prices(request):
     try:
+        # Get country filter from query params (?country=AU or ?country=NZ or ?country=ALL)
+        country_filter = request.GET.get('country', 'ALL').upper()
+        
+        def filter_by_country(meetings):
+            if country_filter == 'ALL':
+                return meetings
+            return [m for m in meetings if m.get('country', 'AU') == country_filter]
+        
         if has_cached_data():
             cached = get_cached_data()
             
-            jockey_meetings = cached.get('jockey_challenges', [])
-            driver_meetings = cached.get('driver_challenges', [])
+            jockey_meetings = filter_by_country(cached.get('jockey_challenges', []))
+            driver_meetings = filter_by_country(cached.get('driver_challenges', []))
             
             processed_jockey, processed_driver, jockey_value_bets, driver_value_bets = process_meetings(
                 jockey_meetings, driver_meetings
@@ -100,6 +108,12 @@ def get_ai_prices(request):
                 thread.daemon = True
                 thread.start()
             
+            # Count by country
+            all_jockey = cached.get('jockey_challenges', [])
+            all_driver = cached.get('driver_challenges', [])
+            au_count = len([m for m in all_jockey + all_driver if m.get('country', 'AU') == 'AU'])
+            nz_count = len([m for m in all_jockey + all_driver if m.get('country', 'AU') == 'NZ'])
+            
             return JsonResponse({
                 'success': True,
                 'jockey_challenges': processed_jockey,
@@ -109,8 +123,11 @@ def get_ai_prices(request):
                     'total_driver_meetings': len(processed_driver),
                     'jockey_value_bets': jockey_value_bets,
                     'driver_value_bets': driver_value_bets,
-                    'total_value_bets': jockey_value_bets + driver_value_bets
+                    'total_value_bets': jockey_value_bets + driver_value_bets,
+                    'au_meetings': au_count,
+                    'nz_meetings': nz_count
                 },
+                'country_filter': country_filter,
                 'last_updated': cached.get('last_updated'),
                 'from_cache': True
             })
@@ -122,12 +139,18 @@ def get_ai_prices(request):
         result = loop.run_until_complete(fetch_all_data())
         loop.close()
         
-        jockey_meetings = result.get('jockey_challenges', [])
-        driver_meetings = result.get('driver_challenges', [])
+        jockey_meetings = filter_by_country(result.get('jockey_challenges', []))
+        driver_meetings = filter_by_country(result.get('driver_challenges', []))
         
         processed_jockey, processed_driver, jockey_value_bets, driver_value_bets = process_meetings(
             jockey_meetings, driver_meetings
         )
+        
+        # Count by country
+        all_jockey = result.get('jockey_challenges', [])
+        all_driver = result.get('driver_challenges', [])
+        au_count = len([m for m in all_jockey + all_driver if m.get('country', 'AU') == 'AU'])
+        nz_count = len([m for m in all_jockey + all_driver if m.get('country', 'AU') == 'NZ'])
         
         return JsonResponse({
             'success': True,
@@ -138,8 +161,11 @@ def get_ai_prices(request):
                 'total_driver_meetings': len(processed_driver),
                 'jockey_value_bets': jockey_value_bets,
                 'driver_value_bets': driver_value_bets,
-                'total_value_bets': jockey_value_bets + driver_value_bets
+                'total_value_bets': jockey_value_bets + driver_value_bets,
+                'au_meetings': au_count,
+                'nz_meetings': nz_count
             },
+            'country_filter': country_filter,
             'last_updated': result.get('last_updated'),
             'from_cache': False
         })

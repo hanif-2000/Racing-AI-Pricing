@@ -1,0 +1,142 @@
+/* country-filter.css - AU/NZ Filter Styles */
+
+/* Country Filter Container */
+.country-filter {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.filter-buttons {
+  display: flex;
+  gap: 8px;
+  background: #1a1a2e;
+  padding: 4px;
+  border-radius: 12px;
+}
+
+.filter-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #888;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.filter-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+.filter-btn.active {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+}
+
+.filter-btn .count {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.filter-btn.active .count {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Country Badge for Meeting Cards */
+.country-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.country-badge.au {
+  background: linear-gradient(135deg, #002868 0%, #bf0a30 100%);
+  color: #fff;
+}
+
+.country-badge.nz {
+  background: linear-gradient(135deg, #00247d 0%, #cc142b 100%);
+  color: #fff;
+}
+
+/* Meeting Card Header with Country */
+.meeting-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.meeting-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meeting-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+}
+
+/* Stats Section */
+.country-stats {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+
+.stat-flag {
+  font-size: 20px;
+}
+
+.stat-count {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #888;
+}
+
+/* Mobile Responsive */
+@media (max-width: 480px) {
+  .filter-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+  
+  .country-stats {
+    flex-direction: column;
+    gap: 8px;
+  }
+}

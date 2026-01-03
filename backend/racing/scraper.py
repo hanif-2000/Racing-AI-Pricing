@@ -31,6 +31,45 @@ def has_cached_data():
 
 
 # =====================================================
+# 🇳🇿 NZ TRACKS LIST
+# =====================================================
+
+NZ_TRACKS = [
+    # Thoroughbred (Gallops)
+    'TE AROHA', 'TRENTHAM', 'ELLERSLIE', 'RICCARTON', 'OTAKI',
+    'HASTINGS', 'AWAPUNI', 'WANGANUI', 'ROTORUA', 'TAURANGA',
+    'PUKEKOHE', 'RUAKAKA', 'MATAMATA', 'TE RAPA', 'WOODVILLE',
+    'ASHBURTON', 'WINGATUI', 'OAMARU', 'TIMARU', 'WAVERLEY',
+    'KUROW', 'CROMWELL', 'RIVERTON', 'WAIKOUAITI', 'TAPANUI',
+    
+    # Harness Racing
+    'ADDINGTON', 'ALEXANDRA PARK', 'CAMBRIDGE', 'FORBURY PARK',
+    'ASCOT PARK', 'MANAWATU', 'WYNDHAM', 'OAMARU HARNESS',
+    'ASHBURTON HARNESS', 'METHVEN', 'RANGIORA', 'WASHDYKE',
+    'BANKS PENINSULA', 'KAIKOURA', 'OMAKAU', 'WINTON',
+    
+    # Greyhounds
+    'MANUKAU', 'WANGANUI GREYHOUNDS'
+]
+
+def get_country(track_name):
+    """Identify if track is AU or NZ"""
+    track_upper = track_name.upper().strip()
+    
+    # Check exact match
+    if track_upper in NZ_TRACKS:
+        return 'NZ'
+    
+    # Check partial match (for variations like "Te Aroha (NZ)")
+    for nz_track in NZ_TRACKS:
+        if nz_track in track_upper or track_upper in nz_track:
+            return 'NZ'
+    
+    # Default to AU
+    return 'AU'
+
+
+# =====================================================
 # 🌐 BASE SCRAPER
 # =====================================================
 
@@ -119,9 +158,10 @@ class SportsbetScraper(BaseScraper):
                             'meeting': meeting.upper(), 
                             'type': 'jockey', 
                             'jockeys': jockeys, 
-                            'source': 'sportsbet'
+                            'source': 'sportsbet',
+                            'country': get_country(meeting)
                         })
-                        print(f"[Sportsbet] ✅ {meeting}: {len(jockeys)} jockeys")
+                        print(f"[Sportsbet] ✅ {meeting} ({get_country(meeting)}): {len(jockeys)} jockeys")
                     
                     await page.goto('https://www.sportsbet.com.au/horse-racing')
                     await asyncio.sleep(1)
@@ -207,9 +247,10 @@ class SportsbetScraper(BaseScraper):
                             'meeting': meeting.upper(), 
                             'type': 'driver', 
                             'drivers': drivers, 
-                            'source': 'sportsbet'
+                            'source': 'sportsbet',
+                            'country': get_country(meeting)
                         })
-                        print(f"[Sportsbet] ✅ {meeting} (Driver): {len(drivers)} drivers")
+                        print(f"[Sportsbet] ✅ {meeting} ({get_country(meeting)}) Driver: {len(drivers)} drivers")
                         
                 except:
                     pass
@@ -282,9 +323,10 @@ class TABtouchScraper(BaseScraper):
                             'meeting': meeting.upper(), 
                             'type': 'jockey', 
                             'jockeys': jockeys, 
-                            'source': 'tabtouch'
+                            'source': 'tabtouch',
+                            'country': get_country(meeting)
                         })
-                        print(f"[TABtouch] ✅ {meeting}: {len(jockeys)} jockeys")
+                        print(f"[TABtouch] ✅ {meeting} ({get_country(meeting)}): {len(jockeys)} jockeys")
                     
                 except:
                     pass
@@ -368,9 +410,10 @@ class ElitebetScraper(BaseScraper):
                             'meeting': meeting.upper(),
                             'type': 'jockey',
                             'jockeys': jockeys,
-                            'source': 'elitebet'
+                            'source': 'elitebet',
+                            'country': get_country(meeting)
                         })
-                        print(f"[Elitebet] ✅ {meeting}: {len(jockeys)} jockeys")
+                        print(f"[Elitebet] ✅ {meeting} ({get_country(meeting)}): {len(jockeys)} jockeys")
                     
                 except:
                     pass
@@ -438,7 +481,8 @@ class TABScraper(BaseScraper):
                                 'meeting': current_meeting, 
                                 'type': 'jockey', 
                                 'jockeys': jockeys.copy(), 
-                                'source': 'tab'
+                                'source': 'tab',
+                                'country': get_country(current_meeting)
                             })
                         current_meeting = remaining
                         jockeys = []
@@ -465,7 +509,8 @@ class TABScraper(BaseScraper):
                     'meeting': current_meeting, 
                     'type': 'jockey', 
                     'jockeys': jockeys, 
-                    'source': 'tab'
+                    'source': 'tab',
+                    'country': get_country(current_meeting)
                 })
             
             print(f"[TAB] ✅ {len(meetings)} meetings")
@@ -544,9 +589,10 @@ class LadbrokesScraper(BaseScraper):
                             'meeting': meeting.upper(),
                             'type': 'jockey',
                             'jockeys': jockeys,
-                            'source': 'ladbrokes'
+                            'source': 'ladbrokes',
+                            'country': get_country(meeting)
                         })
-                        print(f"[Ladbrokes] ✅ {meeting}: {len(jockeys)} jockeys")
+                        print(f"[Ladbrokes] ✅ {meeting} ({get_country(meeting)}): {len(jockeys)} jockeys")
                     
                     # Go back to extras page
                     await page.goto('https://www.ladbrokes.com.au/racing/extras')
@@ -626,9 +672,10 @@ class LadbrokesScraper(BaseScraper):
                             'meeting': clean_meeting,
                             'type': 'driver',
                             'drivers': drivers,
-                            'source': 'ladbrokes'
+                            'source': 'ladbrokes',
+                            'country': get_country(clean_meeting)
                         })
-                        print(f"[Ladbrokes] ✅ {meeting} (Driver): {len(drivers)} drivers")
+                        print(f"[Ladbrokes] ✅ {meeting} ({get_country(clean_meeting)}) Driver: {len(drivers)} drivers")
                     
                     # Go back to extras page
                     await page.goto('https://www.ladbrokes.com.au/racing/extras')
@@ -735,9 +782,10 @@ class PointsBetScraper(BaseScraper):
                             'meeting': meeting.upper(),
                             'type': 'jockey',
                             'jockeys': jockeys,
-                            'source': 'pointsbet'
+                            'source': 'pointsbet',
+                            'country': get_country(meeting)
                         })
-                        print(f"[PointsBet] ✅ {meeting}: {len(jockeys)} jockeys")
+                        print(f"[PointsBet] ✅ {meeting} ({get_country(meeting)}): {len(jockeys)} jockeys")
                     
                     # Go back
                     await page.goto('https://pointsbet.com.au/racing')
@@ -837,9 +885,10 @@ class PointsBetScraper(BaseScraper):
                             'meeting': clean_meeting,
                             'type': 'driver',
                             'drivers': drivers,
-                            'source': 'pointsbet'
+                            'source': 'pointsbet',
+                            'country': get_country(clean_meeting)
                         })
-                        print(f"[PointsBet] ✅ {meeting} (Driver): {len(drivers)} drivers")
+                        print(f"[PointsBet] ✅ {meeting} ({get_country(clean_meeting)}) Driver: {len(drivers)} drivers")
                     
                 except Exception as e:
                     print(f"[PointsBet] ⚠️ Driver {meeting}: {str(e)[:40]}")
