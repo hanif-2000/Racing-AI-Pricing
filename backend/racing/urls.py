@@ -8,6 +8,7 @@ urlpatterns = [
     path('ai-prices/', views.get_ai_prices, name='ai_prices'),
     path('jockey-challenges/', views.get_jockey_challenges, name='jockey_challenges'),
     path('driver-challenges/', views.get_driver_challenges, name='driver_challenges'),
+    path('comparison/', views.get_comparison, name='comparison'),
     path('refresh/', views.refresh_data, name='refresh'),
     
     # Bet tracker
