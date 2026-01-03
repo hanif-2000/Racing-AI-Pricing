@@ -1,0 +1,184 @@
+MENU
+AUDIO
+VIDEO
+Home
+Jockey Challenge
+Jockey Challenge
+Jockey Challenge - Betting Odds
+Show TAB Prop Number
+JOCK MstPts GEELONG
+1 Market
+JOCK MstPts GEEL 3-2-1 03/01 Market is suspended
+Jackson Radley
+SUSP
+Jamie Melham
+SUSP
+Harry Coffey
+SUSP
+Logan Bates
+SUSP
+Michael Dee
+SUSP
+Thomas Stockdale
+SUSP
+Ethan Brown
+SUSP
+Any Other Jockey (Geelong)
+SUSP
+JOCK MstPts RANDWICK
+1 Market
+JOCK MstPts RAND 3-2-1 03/01Sat 3 Jan 7:06
+Zac Lloyd
+1.35
+Siena Grima
+8.00
+Dylan Gibbons
+12.00
+Adam Hyeronimus
+14.00
+Nash Rawiller
+16.00
+Chad Schofield
+21.00
+Tom Sherry
+34.00
+Any Other Jockey (Randwick)
+14.00
+JOCK MstPts IPSWICH
+1 Market
+JOCK MstPts IPSW 3-2-1 03/01Sat 3 Jan 7:26
+Dylan Turner
+1.90
+Brandon Lerena
+3.80
+Justin Huxtable
+6.50
+Jett Newman
+11.00
+Adin Thompson
+14.00
+Heavelon Van Der Hoven
+14.00
+Bella Youngberry
+41.00
+Any Other Jockey (Ipswich)
+26.00
+JOCK MstPts GAWLER
+1 Market
+JOCK MstPts GAWL 3-2-1 03/01Sat 3 Jan 7:33
+Connor Murtagh
+5.00
+Jason Holder
+4.40
+Caitlin Jones
+7.00
+Todd Pannell
+7.00
+Jake Toeroek
+7.50
+Ben Price
+9.00
+Teagan Voorham
+14.00
+Any Other Jockey (Gawler)
+4.40
+JOCK MstPts EAGLE FARM
+1 Market
+JOCK MstPts EAGL 3-2-1 03/01Sat 3 Jan 7:49
+Craig Williams
+1.95
+Angela Jones
+6.00
+Ryan Maloney
+8.00
+Tim Clark
+11.00
+Ben Thompson
+11.00
+Tommy Berry
+13.00
+Daniel Moor
+16.00
+Any Other Jockey (Eagle Fm)
+8.50
+JOCK MstPts BOWRAVILLE
+1 Market
+JOCK MstPts BOWR 3-2-1 03/01Sat 3 Jan 8:27
+Luke Rolls
+2.20
+Grady Spokes
+3.20
+Jon Grisedale
+5.00
+Leanne Boyd
+11.00
+Grace Palmer
+12.00
+Ben Looker
+18.00
+Jeff Kehoe
+41.00
+Any Other Jockey(Bowraville)
+31.00
+JOCK MstPts KEMBLA GRANGE
+1 Market
+JOCK MstPts KEMB 3-2-1 03/01Sat 3 Jan 8:36
+Mollie Fitzgerald
+2.20
+Keagan Latham
+6.00
+Lee Magorrian
+7.50
+Mitch Stapleford
+9.50
+Brock Ryan
+10.00
+Mitchell Bell
+10.00
+Pierre Boudvillain
+13.00
+Any Other Jockey (Kembla G)
+9.00
+JOCK MstPts CRANBOURNE
+1 Market
+JOCK MstPts CRAN 3-2-1 03/01Sat 3 Jan 11:12
+Carleen Hefel
+1.90
+Teo Nugent
+2.30
+Celina Gaudray
+6.50
+Shane Foley
+21.00
+Liam Riordan
+31.00
+Bailey Kinninmont
+71.00
+Jason Maskiell
+101.00
+Any Other Jockey (Cranbrne)
+34.00
+JOCK MstPts TOOWOOMBA
+1 Market
+JOCK MstPts TOOW 3-2-1 03/01Sat 3 Jan 12:56
+Olivia Webb
+1.85
+Rob Thorburn
+2.90
+Bella Youngberry
+6.50
+Gary Geran
+14.00
+Karl Zechner
+18.00
+Les Tilley
+21.00
+Nozi Tomizawa
+71.00
+Any Other Jockey (Toowoomba)
+51.00
+Bet Slip
+Pending Bets
+Click a price to add a bet.
+
+Add more selections to start a multi

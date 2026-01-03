@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import PricesTab from './components/PricesTab';
 import BetTracker from './components/BetTracker';
+import HistoryTab from './components/HistoryTab';
 import LoadingShimmer from './components/LoadingShimmer';
 import './App.css';
 
@@ -12,19 +13,34 @@ function App() {
   const [activeTab, setActiveTab] = useState('prices');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [challengeType, setChallengeType] = useState('all');
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const fetchData = async () => {
-    setLoading(true);
+    // Show shimmer only on first load (no data yet)
+    if (!data) {
+      setLoading(true);
+    } else {
+      setIsRefreshing(true);
+    }
+    
     try {
       const response = await fetch('http://127.0.0.1:8000/api/ai-prices/');
       const result = await response.json();
-      setData(result);
+      
+      // ✅ Only update if we got actual data
+      if (result.jockey_challenges?.length > 0 || result.driver_challenges?.length > 0) {
+        setData(result);
+        setLastUpdated(new Date().toLocaleTimeString());
+      }
+      // Empty response = keep old data
+      
       setError(null);
-      setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
       setError('Backend not running. Start Django server first!');
     }
+    
     setLoading(false);
+    setIsRefreshing(false);
   };
 
   useEffect(() => {
@@ -49,10 +65,18 @@ function App() {
       <Header 
         onRefresh={fetchData} 
         loading={loading} 
-        lastUpdated={lastUpdated} 
+        lastUpdated={lastUpdated}
+        isRefreshing={isRefreshing}
       />
 
       <main className="main-content">
+        {/* Refreshing Banner */}
+        {isRefreshing && (
+          <div className="refreshing-banner">
+            🔄 Updating data...
+          </div>
+        )}
+
         {/* Main Tabs */}
         <div className="tabs-container">
           <div className="tabs">
@@ -109,31 +133,29 @@ function App() {
 
         {/* Content */}
         <div className="content">
-          {loading && !data ? (
-            <LoadingShimmer />
-          ) : error ? (
-            <div className="error-state">
-              <span className="error-icon">⚠️</span>
-              <h3>{error}</h3>
-              <p>Make sure Django backend is running on port 8000</p>
-              <button onClick={fetchData} className="btn-retry">
-                Try Again
-              </button>
-            </div>
-          ) : activeTab === 'prices' ? (
-            <PricesTab 
-              data={data} 
-              meetings={getFilteredMeetings()} 
-              challengeType={challengeType}
-            />
+          {activeTab === 'prices' ? (
+            loading && !data ? (
+              <LoadingShimmer />
+            ) : error && !data ? (
+              <div className="error-state">
+                <span className="error-icon">⚠️</span>
+                <h3>{error}</h3>
+                <p>Make sure Django backend is running on port 8000</p>
+                <button onClick={fetchData} className="btn-retry">
+                  Try Again
+                </button>
+              </div>
+            ) : (
+              <PricesTab 
+                data={data} 
+                meetings={getFilteredMeetings()} 
+                challengeType={challengeType}
+              />
+            )
           ) : activeTab === 'tracker' ? (
             <BetTracker />
           ) : (
-            <div className="empty-state">
-              <span className="empty-icon">🚧</span>
-              <h3>History Coming Soon</h3>
-              <p>Track your past meetings and results</p>
-            </div>
+            <HistoryTab />
           )}
         </div>
       </main>
