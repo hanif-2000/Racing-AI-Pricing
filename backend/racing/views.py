@@ -1,4 +1,4 @@
-# racing/views.py - WITH CACHING FOR INSTANT LOADING
+# racing/views.py - COMPLETE VERSION
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -10,7 +10,6 @@ from .scraper import fetch_all_data, get_cached_data, has_cached_data, CACHE
 
 
 def calculate_ai_prices(participants, margin=1.30):
-    """Calculate AI prices with edge detection"""
     if not participants:
         return participants
     
@@ -47,17 +46,13 @@ def calculate_ai_prices(participants, margin=1.30):
 
 
 def process_meetings(jockey_meetings, driver_meetings):
-    """Process raw meetings data with AI prices"""
     processed_jockey = []
     jockey_value_bets = 0
     
     for meeting in jockey_meetings:
         participants = []
         for j in meeting.get('jockeys', []):
-            participants.append({
-                'name': j['name'],
-                'odds': j['odds']
-            })
+            participants.append({'name': j['name'], 'odds': j['odds']})
         
         meeting['participants'] = calculate_ai_prices(participants)
         meeting['total_participants'] = len(participants)
@@ -70,10 +65,7 @@ def process_meetings(jockey_meetings, driver_meetings):
     for meeting in driver_meetings:
         participants = []
         for d in meeting.get('drivers', meeting.get('jockeys', [])):
-            participants.append({
-                'name': d['name'],
-                'odds': d['odds']
-            })
+            participants.append({'name': d['name'], 'odds': d['odds']})
         
         meeting['participants'] = calculate_ai_prices(participants)
         meeting['total_participants'] = len(participants)
@@ -84,7 +76,6 @@ def process_meetings(jockey_meetings, driver_meetings):
 
 
 def run_scraper_background():
-    """Run scraper in background thread"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(fetch_all_data())
@@ -93,12 +84,7 @@ def run_scraper_background():
 
 @csrf_exempt
 def get_ai_prices(request):
-    """
-    Main endpoint - Returns cached data INSTANTLY!
-    Triggers background refresh if needed.
-    """
     try:
-        # If we have cached data, return it immediately
         if has_cached_data():
             cached = get_cached_data()
             
@@ -109,7 +95,6 @@ def get_ai_prices(request):
                 jockey_meetings, driver_meetings
             )
             
-            # Start background refresh (non-blocking)
             if not CACHE.get('is_scraping'):
                 thread = threading.Thread(target=run_scraper_background)
                 thread.daemon = True
@@ -130,7 +115,6 @@ def get_ai_prices(request):
                 'from_cache': True
             })
         
-        # No cache - need to fetch (first time only)
         print("📥 No cache found, fetching fresh data...")
         
         loop = asyncio.new_event_loop()
@@ -169,90 +153,77 @@ def get_ai_prices(request):
             'error': str(e),
             'jockey_challenges': [],
             'driver_challenges': [],
-            'summary': {
-                'total_jockey_meetings': 0,
-                'total_driver_meetings': 0,
-                'total_value_bets': 0
-            }
+            'summary': {'total_value_bets': 0}
         })
 
 
 @csrf_exempt
 def get_jockey_challenges(request):
-    """Get jockey challenges only"""
     try:
         if has_cached_data():
             cached = get_cached_data()
             jockey_meetings = cached.get('jockey_challenges', [])
-            
             processed, _, value_bets, _ = process_meetings(jockey_meetings, [])
             
             return JsonResponse({
                 'success': True,
                 'jockey_challenges': processed,
-                'summary': {
-                    'total_meetings': len(processed),
-                    'total_value_bets': value_bets
-                }
+                'summary': {'total_meetings': len(processed), 'total_value_bets': value_bets}
             })
         
-        # Trigger fetch if no cache
         return get_ai_prices(request)
-        
     except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': str(e),
-            'jockey_challenges': []
-        })
+        return JsonResponse({'success': False, 'error': str(e), 'jockey_challenges': []})
 
 
 @csrf_exempt
 def get_driver_challenges(request):
-    """Get driver challenges only"""
     try:
         if has_cached_data():
             cached = get_cached_data()
             driver_meetings = cached.get('driver_challenges', [])
-            
             _, processed, _, value_bets = process_meetings([], driver_meetings)
             
             return JsonResponse({
                 'success': True,
                 'driver_challenges': processed,
-                'summary': {
-                    'total_meetings': len(processed),
-                    'total_value_bets': value_bets
-                }
+                'summary': {'total_meetings': len(processed), 'total_value_bets': value_bets}
             })
         
         return get_ai_prices(request)
-        
     except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': str(e),
-            'driver_challenges': []
-        })
+        return JsonResponse({'success': False, 'error': str(e), 'driver_challenges': []})
 
 
-@csrf_exempt 
-def refresh_data(request):
-    """Force refresh data"""
+@csrf_exempt
+def get_comparison(request):
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(fetch_all_data())
-        loop.close()
-        
+        if has_cached_data():
+            cached = get_cached_data()
+            return JsonResponse({
+                'success': True,
+                'jockey_challenges': cached.get('jockey_challenges', []),
+                'driver_challenges': cached.get('driver_challenges', []),
+                'bookmakers': ['sportsbet', 'tabtouch', 'tab', 'ladbrokes', 'elitebet']
+            })
         return get_ai_prices(request)
-        
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
 
 
-# ============ BET TRACKER ============
+@csrf_exempt 
+def refresh_data(request):
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(fetch_all_data())
+        loop.close()
+        return get_ai_prices(request)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
 
+
+# BET TRACKER
 BETS_STORAGE = []
 
 @csrf_exempt
