@@ -24,7 +24,7 @@ function App() {
     }
     
     try {
-      const response = await fetch('https://racing-backend.onrender.com/api/ai-prices/');
+      const response = await fetch('https://racing-ai-pricing.onrender.com/api/ai-prices/');
       const result = await response.json();
       
       // ✅ Only update if we got actual data
