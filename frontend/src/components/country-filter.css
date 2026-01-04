@@ -1,142 +1,434 @@
-/* country-filter.css - AU/NZ Filter Styles */
+/* ========================================
+   COUNTRY FILTER & COMPARISON TABLE CSS
+   Multi-bookmaker comparison layout
+   ======================================== */
 
-/* Country Filter Container */
+/* Country Filter */
 .country-filter {
   display: flex;
   justify-content: center;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 .filter-buttons {
   display: flex;
   gap: 8px;
-  background: #1a1a2e;
-  padding: 4px;
+  background: rgba(30, 41, 59, 0.5);
+  padding: 6px;
   border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .filter-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
+  gap: 8px;
+  padding: 10px 20px;
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: #888;
+  color: #94a3b8;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .filter-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
 }
 
 .filter-btn.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #22c55e, #10b981);
   color: #fff;
 }
 
 .filter-btn .count {
   background: rgba(255, 255, 255, 0.2);
-  padding: 2px 8px;
+  padding: 2px 10px;
   border-radius: 10px;
   font-size: 12px;
 }
 
-.filter-btn.active .count {
-  background: rgba(255, 255, 255, 0.3);
-}
-
-/* Country Badge for Meeting Cards */
-.country-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-
-.country-badge.au {
-  background: linear-gradient(135deg, #002868 0%, #bf0a30 100%);
-  color: #fff;
-}
-
-.country-badge.nz {
-  background: linear-gradient(135deg, #00247d 0%, #cc142b 100%);
-  color: #fff;
-}
-
-/* Meeting Card Header with Country */
-.meeting-header {
+/* Stats Row */
+.stats-row {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
 }
 
-.meeting-title {
+.stat-box {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.meeting-name {
-  font-size: 18px;
-  font-weight: 700;
-  color: #fff;
-}
-
-/* Stats Section */
-.country-stats {
-  display: flex;
-  gap: 16px;
-  justify-content: center;
-  margin-bottom: 16px;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 12px 20px;
   border-radius: 12px;
 }
 
-.stat-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
+.stat-box.highlight {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.2), rgba(16, 185, 129, 0.2));
+  border-color: rgba(34, 197, 94, 0.3);
 }
 
-.stat-flag {
+.stat-box .stat-icon {
   font-size: 20px;
 }
 
-.stat-count {
-  font-size: 18px;
+.stat-box .stat-num {
+  font-size: 20px;
   font-weight: 700;
   color: #fff;
 }
 
-.stat-label {
-  font-size: 12px;
-  color: #888;
+.stat-box.highlight .stat-num {
+  color: #22c55e;
 }
 
-/* Mobile Responsive */
-@media (max-width: 480px) {
-  .filter-btn {
-    padding: 6px 12px;
-    font-size: 12px;
+.stat-box .stat-text {
+  font-size: 12px;
+  color: #64748b;
+  text-transform: uppercase;
+}
+
+/* Section Title */
+.section-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  margin: 32px 0 16px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Meeting Card */
+.meeting-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+
+.meeting-header-comparison {
+  padding: 16px 24px;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.15), rgba(168, 85, 247, 0.15));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.meeting-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.meeting-title-row .meeting-icon {
+  font-size: 24px;
+}
+
+.meeting-title-row h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+  margin: 0;
+}
+
+.country-tag {
+  padding: 4px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.country-tag.au {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+
+.country-tag.nz {
+  background: rgba(59, 130, 246, 0.2);
+  color: #3b82f6;
+}
+
+.participant-badge {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+/* Source Badges */
+.source-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.source-tag {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  text-transform: uppercase;
+}
+
+/* Comparison Table */
+.comparison-table-container {
+  overflow-x: auto;
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 800px;
+}
+
+.comparison-table th {
+  padding: 14px 12px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: rgba(15, 23, 42, 0.8);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: #94a3b8;
+}
+
+.comparison-table th.name-col {
+  text-align: left;
+  min-width: 160px;
+  padding-left: 20px;
+}
+
+.comparison-table th.odds-col {
+  min-width: 85px;
+}
+
+.comparison-table th.best-col {
+  min-width: 90px;
+  color: #22c55e;
+}
+
+.comparison-table th.ai-col {
+  min-width: 85px;
+  color: #3b82f6;
+}
+
+.comparison-table th.edge-col {
+  min-width: 75px;
+}
+
+.comparison-table th.value-col {
+  min-width: 90px;
+}
+
+.comparison-table td {
+  padding: 14px 12px;
+  text-align: center;
+  color: #cbd5e1;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 14px;
+}
+
+.comparison-table td.name-col {
+  text-align: left;
+  padding-left: 20px;
+}
+
+.comparison-table td.name-col strong {
+  color: #fff;
+  font-weight: 600;
+}
+
+/* Odds Cells */
+.comparison-table td.odds-col {
+  color: #e2e8f0;
+  font-weight: 500;
+}
+
+.comparison-table td.best-highlight {
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.best-odds-text {
+  color: #22c55e !important;
+  font-weight: 700 !important;
+}
+
+/* Best Odds Display */
+.best-odds-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.best-odds-display .best-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: #22c55e;
+}
+
+.best-odds-display .best-source {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* AI Price */
+.ai-price {
+  color: #3b82f6 !important;
+  font-weight: 700;
+  font-size: 15px;
+}
+
+/* Edge Badge */
+.edge-badge {
+  display: inline-block;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.edge-badge.positive {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+
+.edge-badge.negative {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+/* Value Badge */
+.value-badge {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 11px;
+  color: #fff;
+}
+
+.value-badge.hot {
+  background: linear-gradient(135deg, #ef4444, #f97316);
+  animation: pulse-hot 1.5s infinite;
+}
+
+.value-badge.good {
+  background: linear-gradient(135deg, #f97316, #eab308);
+}
+
+.value-badge.mild {
+  background: linear-gradient(135deg, #22c55e, #10b981);
+}
+
+@keyframes pulse-hot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+.no-value {
+  color: #475569;
+}
+
+/* Value Row Highlight */
+.comparison-table tr.value-row {
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.comparison-table tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.comparison-table tr.value-row:hover {
+  background: rgba(34, 197, 94, 0.12);
+}
+
+/* No Data */
+.no-data {
+  text-align: center;
+  padding: 40px;
+  color: #64748b;
+  font-size: 14px;
+  background: rgba(30, 41, 59, 0.3);
+  border-radius: 12px;
+  margin-bottom: 20px;
+}
+
+/* Footer */
+.prices-footer {
+  text-align: center;
+  padding: 20px;
+  color: #64748b;
+  font-size: 12px;
+  margin-top: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.cache-tag {
+  margin-left: 12px;
+  background: rgba(59, 130, 246, 0.2);
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: #3b82f6;
+  font-size: 11px;
+}
+
+/* Loading */
+.loading {
+  text-align: center;
+  padding: 80px 20px;
+  color: #94a3b8;
+  font-size: 18px;
+}
+
+/* Responsive */
+@media (max-width: 1200px) {
+  .comparison-table {
+    min-width: 750px;
+  }
+}
+
+@media (max-width: 768px) {
+  .stats-row {
+    gap: 10px;
   }
   
-  .country-stats {
+  .stat-box {
+    padding: 10px 14px;
+  }
+  
+  .filter-buttons {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  
+  .section-title {
+    font-size: 16px;
+  }
+  
+  .meeting-header-comparison {
     flex-direction: column;
-    gap: 8px;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .stat-box .stat-text {
+    display: none;
   }
 }

@@ -342,3 +342,118 @@ def bet_summary(request):
             'total_pnl': round(total_pnl, 2)
         }
     })
+
+
+
+    # =====================================================
+# LIVE TRACKER
+# =====================================================
+
+from .live_tracker import LiveMeetingTracker
+
+LIVE_TRACKERS = {}  # Store active trackers
+
+
+@csrf_exempt
+def get_all_live_trackers(request):
+    """Get all active live trackers"""
+    trackers = {}
+    for meeting, tracker in LIVE_TRACKERS.items():
+        trackers[meeting] = tracker.to_dict()
+    
+    return JsonResponse({'success': True, 'trackers': trackers, 'count': len(trackers)})
+
+
+@csrf_exempt
+def get_live_tracker(request, meeting_name):
+    """Get live tracker data for a meeting"""
+    meeting = meeting_name.upper()
+    
+    if meeting not in LIVE_TRACKERS:
+        return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
+    
+    tracker = LIVE_TRACKERS[meeting]
+    return JsonResponse({'success': True, **tracker.to_dict()})
+
+
+@csrf_exempt
+def init_live_tracker(request):
+    """Initialize a live tracker from current scraped data"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        meeting_name = data.get('meeting', '').upper()
+        challenge_type = data.get('type', 'jockey')
+        total_races = data.get('total_races', 8)
+        
+        # Get participants from cached scrape data
+        participants = []
+        source_key = 'jockey_challenges' if challenge_type == 'jockey' else 'driver_challenges'
+        
+        for item in CACHE.get(source_key, []):
+            if item['meeting'] == meeting_name:
+                key = 'jockeys' if challenge_type == 'jockey' else 'drivers'
+                participants = item.get(key, [])
+                break
+        
+        if not participants:
+            return JsonResponse({'success': False, 'error': f'No data found for {meeting_name}'}, status=404)
+        
+        # Create tracker
+        tracker = LiveMeetingTracker(meeting_name, challenge_type)
+        tracker.initialize_participants(participants, total_races)
+        
+        # Add bookmaker odds from all sources
+        for item in CACHE.get(source_key, []):
+            if item['meeting'] == meeting_name:
+                source = item.get('source', 'unknown')
+                key = 'jockeys' if challenge_type == 'jockey' else 'drivers'
+                tracker.add_bookmaker_odds(source, item.get(key, []))
+        
+        LIVE_TRACKERS[meeting_name] = tracker
+        
+        return JsonResponse({'success': True, **tracker.to_dict()})
+        
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+@csrf_exempt
+def update_race_result(request):
+    """Update race result for a meeting"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        meeting_name = data.get('meeting', '').upper()
+        race_num = data.get('race_num', 0)
+        results = data.get('results', [])
+        
+        if meeting_name not in LIVE_TRACKERS:
+            return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
+        
+        tracker = LIVE_TRACKERS[meeting_name]
+        tracker.update_race_result(race_num, results)
+        
+        # Re-scrape bookmaker odds after each race
+        # (odds change after results)
+        
+        return JsonResponse({'success': True, **tracker.to_dict()})
+        
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+@csrf_exempt
+def delete_live_tracker(request, meeting_name):
+    """Delete a live tracker"""
+    meeting = meeting_name.upper()
+    
+    if meeting in LIVE_TRACKERS:
+        del LIVE_TRACKERS[meeting]
+        return JsonResponse({'success': True, 'message': f'{meeting} tracker deleted'})
+    
+    return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)

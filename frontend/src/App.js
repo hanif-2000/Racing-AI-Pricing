@@ -1,8 +1,10 @@
+// src/App.js - UPDATED WITH LIVE TRACKER
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import PricesTab from './components/PricesTab';
 import BetTracker from './components/BetTracker';
 import HistoryTab from './components/HistoryTab';
+import LiveTracker from './components/LiveTracker';
 import LoadingShimmer from './components/LoadingShimmer';
 import './App.css';
 
@@ -13,10 +15,10 @@ function App() {
   const [activeTab, setActiveTab] = useState('prices');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [challengeType, setChallengeType] = useState('all');
+  const [country, setCountry] = useState('ALL');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const fetchData = async () => {
-    // Show shimmer only on first load (no data yet)
     if (!data) {
       setLoading(true);
     } else {
@@ -24,15 +26,14 @@ function App() {
     }
     
     try {
-      const response = await fetch('https://racing-ai-pricing.onrender.com/api/ai-prices/');
+      const baseUrl = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
+      const response = await fetch(`${baseUrl}/api/ai-prices/`);
       const result = await response.json();
       
-      // ✅ Only update if we got actual data
       if (result.jockey_challenges?.length > 0 || result.driver_challenges?.length > 0) {
         setData(result);
         setLastUpdated(new Date().toLocaleTimeString());
       }
-      // Empty response = keep old data
       
       setError(null);
     } catch (err) {
@@ -70,7 +71,6 @@ function App() {
       />
 
       <main className="main-content">
-        {/* Refreshing Banner */}
         {isRefreshing && (
           <div className="refreshing-banner">
             🔄 Updating data...
@@ -87,6 +87,12 @@ function App() {
               <span>📊</span> AI Prices
             </button>
             <button 
+              onClick={() => setActiveTab('live')}
+              className={`tab ${activeTab === 'live' ? 'active tab-yellow' : ''}`}
+            >
+              <span>🏇</span> Live Tracker
+            </button>
+            <button 
               onClick={() => setActiveTab('tracker')}
               className={`tab ${activeTab === 'tracker' ? 'active tab-blue' : ''}`}
             >
@@ -101,7 +107,7 @@ function App() {
           </div>
         </div>
 
-        {/* Challenge Type Filter */}
+        {/* Challenge Type Filter - Only on Prices Tab */}
         {activeTab === 'prices' && !loading && data && (
           <div className="filter-bar">
             <div className="filter-tabs">
@@ -150,8 +156,12 @@ function App() {
                 data={data} 
                 meetings={getFilteredMeetings()} 
                 challengeType={challengeType}
+                country={country}
+                setCountry={setCountry}
               />
             )
+          ) : activeTab === 'live' ? (
+            <LiveTracker data={data} />
           ) : activeTab === 'tracker' ? (
             <BetTracker />
           ) : (
@@ -161,7 +171,7 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>🏇 Racing AI Pricing • Live data from TAB.com.au • Jockey & Driver Challenges</p>
+        <p>🏇 Racing AI Pricing • Live data from 6 Bookmakers • Jockey & Driver Challenges</p>
       </footer>
     </div>
   );
