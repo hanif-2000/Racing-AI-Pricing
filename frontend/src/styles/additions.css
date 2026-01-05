@@ -1,0 +1,507 @@
+/* src/styles/additions.css */
+/* Additional styles for new components - Add to your App.css */
+
+/* =====================================================
+   MARGIN SLIDER
+   ===================================================== */
+
+.margin-slider {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  border: 1px solid #334155;
+}
+
+.margin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.margin-header label {
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.margin-value {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: 'SF Mono', monospace;
+}
+
+.slider-container {
+  position: relative;
+}
+
+.slider {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  appearance: none;
+  cursor: pointer;
+  outline: none;
+  background: #374151;
+}
+
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: white;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.slider-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.margin-hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #64748b;
+  text-align: center;
+  min-height: 20px;
+}
+
+/* =====================================================
+   LIVE TRACKER
+   ===================================================== */
+
+.live-tracker {
+  padding: 20px;
+}
+
+.tracker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.tracker-header h2 {
+  font-size: 24px;
+  color: #f1f5f9;
+}
+
+.auto-refresh-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.auto-refresh-toggle input {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.error-banner {
+  background: #7f1d1d;
+  color: #fca5a5;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.error-banner button {
+  background: none;
+  border: none;
+  color: #fca5a5;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+/* Meeting Selection */
+.meeting-selection {
+  background: #1e293b;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.meeting-selection h3 {
+  color: #94a3b8;
+  font-size: 14px;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.meetings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meeting-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #0f172a;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+}
+
+.meeting-item:hover {
+  border-color: #334155;
+}
+
+.meeting-item.tracking {
+  border-color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.meeting-item.selected {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.meeting-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.meeting-icon {
+  font-size: 20px;
+}
+
+.meeting-name {
+  color: #f1f5f9;
+  font-weight: 500;
+}
+
+.country-flag {
+  font-size: 16px;
+}
+
+.meeting-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.track-btn, .view-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.track-btn {
+  background: #3b82f6;
+  color: white;
+  border: none;
+}
+
+.track-btn:hover {
+  background: #2563eb;
+}
+
+.track-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.view-btn {
+  background: #22c55e;
+  color: white;
+  border: none;
+}
+
+.view-btn:hover {
+  background: #16a34a;
+}
+
+.delete-btn {
+  background: #ef4444;
+  color: white;
+  border: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.delete-btn:hover {
+  background: #dc2626;
+}
+
+/* Tracker Display */
+.tracker-display {
+  background: #1e293b;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.tracker-info {
+  margin-bottom: 20px;
+}
+
+.tracker-info h3 {
+  color: #f1f5f9;
+  font-size: 20px;
+  margin-bottom: 12px;
+}
+
+.race-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.race-progress span {
+  color: #94a3b8;
+  font-size: 14px;
+  min-width: 80px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 8px;
+  background: #374151;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #16a34a);
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+
+/* Leaderboard */
+.leaderboard {
+  margin: 20px 0;
+  overflow-x: auto;
+}
+
+.leaderboard table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.leaderboard th {
+  text-align: left;
+  padding: 12px 8px;
+  color: #64748b;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid #334155;
+}
+
+.leaderboard td {
+  padding: 12px 8px;
+  border-bottom: 1px solid #1e293b;
+  color: #e2e8f0;
+}
+
+.leaderboard tr.value-bet {
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.leaderboard .rank {
+  font-weight: 700;
+  color: #94a3b8;
+  width: 40px;
+}
+
+.leaderboard .name {
+  font-weight: 500;
+}
+
+.leaderboard .points {
+  font-weight: 700;
+  font-family: 'SF Mono', monospace;
+}
+
+.leaderboard .odds, .leaderboard .ai-price {
+  font-family: 'SF Mono', monospace;
+}
+
+.leaderboard .value {
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.leaderboard .value.yes {
+  background: #166534;
+  color: #4ade80;
+}
+
+.leaderboard .value.no {
+  background: #374151;
+  color: #9ca3af;
+}
+
+/* Race History */
+.race-history {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #334155;
+}
+
+.race-history h4 {
+  color: #94a3b8;
+  font-size: 14px;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+}
+
+.race-result {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #1e293b;
+}
+
+.race-num {
+  background: #374151;
+  color: #e2e8f0;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 32px;
+  text-align: center;
+}
+
+.placings {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.placing {
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.placing.p1 { color: #fbbf24; }
+.placing.p2 { color: #94a3b8; }
+.placing.p3 { color: #cd7c2f; }
+
+.dead-heat-badge {
+  background: #7c3aed;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.manual-refresh-btn {
+  width: 100%;
+  padding: 12px;
+  margin-top: 16px;
+  background: #374151;
+  color: #e2e8f0;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.manual-refresh-btn:hover {
+  background: #475569;
+}
+
+/* =====================================================
+   ERROR & LOADING STATES
+   ===================================================== */
+
+.error-message {
+  text-align: center;
+  padding: 40px 20px;
+  color: #f87171;
+}
+
+.error-message p {
+  margin-bottom: 16px;
+}
+
+.retry-btn {
+  background: #3b82f6;
+  color: white;
+  border: none;
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.retry-btn:hover {
+  background: #2563eb;
+}
+
+.loading-spinner {
+  text-align: center;
+  padding: 40px;
+  color: #94a3b8;
+}
+
+/* =====================================================
+   RESPONSIVE
+   ===================================================== */
+
+@media (max-width: 768px) {
+  .tracker-header {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .meeting-item {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .meeting-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .leaderboard {
+    font-size: 13px;
+  }
+
+  .leaderboard th, .leaderboard td {
+    padding: 8px 4px;
+  }
+}

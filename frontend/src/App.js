@@ -1,22 +1,22 @@
 // src/App.js - UPDATED WITH CALENDAR & HISTORY
-import React, { useState, useEffect } from 'react';
-import Header from './components/Header';
-import PricesTab from './components/PricesTab';
-import BetTracker from './components/BetTracker';
-import HistoryTab from './components/HistoryTab';
-import CalendarTab from './components/CalendarTab';
-import LiveTracker from './components/LiveTracker';
-import LoadingShimmer from './components/LoadingShimmer';
-import './App.css';
+import React, { useState, useEffect } from "react";
+import Header from "./components/Header";
+import PricesTab from "./components/PricesTab";
+import BetTracker from "./components/BetTracker";
+import HistoryTab from "./components/HistoryTab";
+import CalendarTab from "./components/CalendarTab";
+import LiveTracker from "./components/LiveTracker";
+import LoadingShimmer from "./components/LoadingShimmer";
+import "./App.css";
 
 function App() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [activeTab, setActiveTab] = useState('prices');
+  const [activeTab, setActiveTab] = useState("prices");
   const [lastUpdated, setLastUpdated] = useState(null);
-  const [challengeType, setChallengeType] = useState('all');
-  const [country, setCountry] = useState('ALL');
+  const [challengeType, setChallengeType] = useState("all");
+  const [country, setCountry] = useState("ALL");
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const fetchData = async () => {
@@ -25,22 +25,25 @@ function App() {
     } else {
       setIsRefreshing(true);
     }
-    
+
     try {
-      const baseUrl = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
+      const baseUrl = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000";
       const response = await fetch(`${baseUrl}/api/ai-prices/`);
       const result = await response.json();
-      
-      if (result.jockey_challenges?.length > 0 || result.driver_challenges?.length > 0) {
+
+      if (
+        result.jockey_challenges?.length > 0 ||
+        result.driver_challenges?.length > 0
+      ) {
         setData(result);
         setLastUpdated(new Date().toLocaleTimeString());
       }
-      
+
       setError(null);
     } catch (err) {
-      setError('Backend not running. Start Django server first!');
+      setError("Backend not running. Start Django server first!");
     }
-    
+
     setLoading(false);
     setIsRefreshing(false);
   };
@@ -53,61 +56,72 @@ function App() {
 
   const getFilteredMeetings = () => {
     if (!data) return [];
-    
-    if (challengeType === 'jockey') {
+
+    if (challengeType === "jockey") {
       return data.jockey_challenges || [];
-    } else if (challengeType === 'driver') {
+    } else if (challengeType === "driver") {
       return data.driver_challenges || [];
     }
-    return [...(data.jockey_challenges || []), ...(data.driver_challenges || [])];
+    return [
+      ...(data.jockey_challenges || []),
+      ...(data.driver_challenges || []),
+    ];
   };
 
   return (
     <div className="app">
-      <Header 
-        onRefresh={fetchData} 
-        loading={loading} 
+      <Header
+        onRefresh={fetchData}
+        loading={loading}
         lastUpdated={lastUpdated}
         isRefreshing={isRefreshing}
       />
 
       <main className="main-content">
         {isRefreshing && (
-          <div className="refreshing-banner">
-            🔄 Updating data...
-          </div>
+          <div className="refreshing-banner">🔄 Updating data...</div>
         )}
 
         {/* Main Tabs */}
         <div className="tabs-container">
           <div className="tabs">
-            <button 
-              onClick={() => setActiveTab('prices')}
-              className={`tab ${activeTab === 'prices' ? 'active tab-green' : ''}`}
+            <button
+              onClick={() => setActiveTab("prices")}
+              className={`tab ${
+                activeTab === "prices" ? "active tab-green" : ""
+              }`}
             >
               <span>📊</span> AI Prices
             </button>
-            <button 
-              onClick={() => setActiveTab('live')}
-              className={`tab ${activeTab === 'live' ? 'active tab-yellow' : ''}`}
+            <button
+              onClick={() => setActiveTab("live")}
+              className={`tab ${
+                activeTab === "live" ? "active tab-yellow" : ""
+              }`}
             >
               <span>🏇</span> Live Tracker
             </button>
-            <button 
-              onClick={() => setActiveTab('tracker')}
-              className={`tab ${activeTab === 'tracker' ? 'active tab-blue' : ''}`}
+            <button
+              onClick={() => setActiveTab("tracker")}
+              className={`tab ${
+                activeTab === "tracker" ? "active tab-blue" : ""
+              }`}
             >
               <span>💰</span> Bet Tracker
             </button>
-            <button 
-              onClick={() => setActiveTab('calendar')}
-              className={`tab ${activeTab === 'calendar' ? 'active tab-orange' : ''}`}
+            <button
+              onClick={() => setActiveTab("calendar")}
+              className={`tab ${
+                activeTab === "calendar" ? "active tab-orange" : ""
+              }`}
             >
               <span>📅</span> Calendar
             </button>
-            <button 
-              onClick={() => setActiveTab('history')}
-              className={`tab ${activeTab === 'history' ? 'active tab-purple' : ''}`}
+            <button
+              onClick={() => setActiveTab("history")}
+              className={`tab ${
+                activeTab === "history" ? "active tab-purple" : ""
+              }`}
             >
               <span>📜</span> History
             </button>
@@ -115,24 +129,30 @@ function App() {
         </div>
 
         {/* Challenge Type Filter - Only on Prices Tab */}
-        {activeTab === 'prices' && !loading && data && (
+        {activeTab === "prices" && !loading && data && (
           <div className="filter-bar">
             <div className="filter-tabs">
-              <button 
-                onClick={() => setChallengeType('all')}
-                className={`filter-tab ${challengeType === 'all' ? 'active' : ''}`}
+              <button
+                onClick={() => setChallengeType("all")}
+                className={`filter-tab ${
+                  challengeType === "all" ? "active" : ""
+                }`}
               >
                 🏆 All Challenges
               </button>
-              <button 
-                onClick={() => setChallengeType('jockey')}
-                className={`filter-tab ${challengeType === 'jockey' ? 'active' : ''}`}
+              <button
+                onClick={() => setChallengeType("jockey")}
+                className={`filter-tab ${
+                  challengeType === "jockey" ? "active" : ""
+                }`}
               >
                 🏇 Jockey ({data.summary?.total_jockey_meetings || 0})
               </button>
-              <button 
-                onClick={() => setChallengeType('driver')}
-                className={`filter-tab ${challengeType === 'driver' ? 'active' : ''}`}
+              <button
+                onClick={() => setChallengeType("driver")}
+                className={`filter-tab ${
+                  challengeType === "driver" ? "active" : ""
+                }`}
               >
                 🏎️ Driver ({data.summary?.total_driver_meetings || 0})
               </button>
@@ -146,7 +166,7 @@ function App() {
 
         {/* Content */}
         <div className="content">
-          {activeTab === 'prices' ? (
+          {activeTab === "prices" ? (
             loading && !data ? (
               <LoadingShimmer />
             ) : error && !data ? (
@@ -159,19 +179,24 @@ function App() {
                 </button>
               </div>
             ) : (
-              <PricesTab 
-                data={data} 
-                meetings={getFilteredMeetings()} 
+              <PricesTab
+                data={data}
+                meetings={getFilteredMeetings()}
                 challengeType={challengeType}
                 country={country}
                 setCountry={setCountry}
               />
             )
-          ) : activeTab === 'live' ? (
-            <LiveTracker data={data} />
-          ) : activeTab === 'tracker' ? (
+          ) : activeTab === "live" ? (
+            <LiveTracker
+              meetings={[
+                ...(data?.jockey_challenges || []),
+                ...(data?.driver_challenges || []),
+              ]}
+            />
+          ) : activeTab === "tracker" ? (
             <BetTracker />
-          ) : activeTab === 'calendar' ? (
+          ) : activeTab === "calendar" ? (
             <CalendarTab />
           ) : (
             <HistoryTab />
@@ -180,7 +205,10 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>🏇 Racing AI Pricing • Live data from 6 Bookmakers • AU & NZ Challenges</p>
+        <p>
+          🏇 Racing AI Pricing • Live data from 6 Bookmakers • AU & NZ
+          Challenges
+        </p>
       </footer>
     </div>
   );

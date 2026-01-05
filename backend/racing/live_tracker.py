@@ -1,378 +1,238 @@
 """
-🏇 LIVE JOCKEY/DRIVER CHALLENGE TRACKER
-- Tracks rides done/left after each race
-- Updates points based on race results
-- Calculates AI Win % and prices
-- Shows race-by-race progression
+Live Meeting Tracker - Track points during live meetings
+Points: 1st=3, 2nd=2, 3rd=1
+Dead heat: Split points (e.g., dead heat 3rd = 0.5 each)
 """
 
-import asyncio
-import re
 from datetime import datetime
+from typing import Dict, List, Optional
 
 
 class LiveMeetingTracker:
-    """Tracks a single meeting's jockey/driver challenge in real-time"""
-    
-    def __init__(self, meeting_name, challenge_type='jockey'):
-        self.meeting = meeting_name.upper()
-        self.type = challenge_type
-        self.participants = {}
+    def __init__(self, meeting_name: str, meeting_type: str = 'jockey', margin: float = 1.30):
+        self.meeting_name = meeting_name.upper()
+        self.meeting_type = meeting_type  # 'jockey' or 'driver'
+        self.margin = margin  # Adjustable margin (default 130%)
+        self.participants: Dict[str, dict] = {}
         self.total_races = 0
         self.races_completed = 0
-        self.race_results = []
-        self.bookmaker_odds = {}
-        self.last_updated = None
-        self.status = 'upcoming'
-        
-    def initialize_participants(self, participants_data, total_races=8):
-        """Initialize participants from scraped odds data"""
+        self.race_results: List[dict] = []
+        self.created_at = datetime.now()
+        self.updated_at = datetime.now()
+    
+    def set_margin(self, margin: float):
+        """Update margin and recalculate prices"""
+        self.margin = margin
+        self._recalculate_ai_prices()
+    
+    def initialize_participants(self, participants: List[dict], total_races: int = 8):
+        """Initialize participants with their starting odds"""
         self.total_races = total_races
-        for p in participants_data:
-            name = p['name']
+        self.participants = {}
+        
+        for p in participants:
+            name = p.get('name', '')
             self.participants[name] = {
-                'rides_done': 0,
-                'rides_left': total_races,
-                'wins': 0,
-                'seconds': 0,
-                'thirds': 0,
-                'points': 0,
-                'last_race_points': 0,
-                'history': [],
-                'initial_odds': p.get('odds', 0),
-                'current_odds': {},
-                'ai_win_pct': 0,
+                'name': name,
+                'starting_odds': p.get('odds', 0),
+                'current_points': 0,
+                'rides_total': total_races,
+                'rides_remaining': total_races,
+                'positions': [],  # List of positions per race
+                'points_history': [],  # Points earned per race
                 'ai_price': 0,
-                'is_leader': False,
-                'is_scratched': False
+                'value': 'NO'
             }
-        self.calculate_ai_prices()
         
-    def add_bookmaker_odds(self, bookmaker, odds_data):
-        """Add odds from a bookmaker"""
-        self.bookmaker_odds[bookmaker] = {}
-        for item in odds_data:
-            name = item['name']
-            odds = item['odds']
-            self.bookmaker_odds[bookmaker][name] = odds
-            if name in self.participants:
-                self.participants[name]['current_odds'][bookmaker] = odds
-                
-    def update_race_result(self, race_num, results):
+        self._recalculate_ai_prices()
+    
+    def update_race_result(self, race_num: int, results: List[dict]):
         """
-        Update with race results
-        results = [
-            {'position': 1, 'jockey': 'James McDonald'},
-            {'position': 2, 'jockey': 'Hugh Bowman'},
-            {'position': 3, 'jockey': 'Blake Shinn'},
-        ]
-        """
-        self.races_completed = race_num
-        self.race_results.append({'race': race_num, 'results': results})
+        Update with race result
+        results = [{'position': 1, 'jockey': 'Name'}, ...]
         
+        Points System:
+        - 1st place: 3 points
+        - 2nd place: 2 points  
+        - 3rd place: 1 point
+        
+        Dead Heat Rules:
+        - Dead heat 1st (2 runners): (3+2)/2 = 2.5 each
+        - Dead heat 2nd (2 runners): (2+1)/2 = 1.5 each
+        - Dead heat 3rd (2 runners): 1/2 = 0.5 each
+        - Dead heat 1st (3 runners): (3+2+1)/3 = 2.0 each
+        """
+        if race_num <= self.races_completed:
+            return  # Already processed this race
+        
+        # Count runners at each position (for dead heat detection)
+        position_counts = {}
+        for r in results:
+            pos = r.get('position', 0)
+            if pos in [1, 2, 3]:
+                position_counts[pos] = position_counts.get(pos, 0) + 1
+        
+        # Base points for positions
         points_map = {1: 3, 2: 2, 3: 1}
         
-        race_participants = set()
+        # Track who got points this race
+        participants_in_race = set()
+        
         for r in results:
-            jockey = r.get('jockey') or r.get('driver')
-            if jockey:
-                race_participants.add(jockey)
-        
-        for name, data in self.participants.items():
-            if name in race_participants:
-                data['rides_done'] += 1
-                data['rides_left'] = self.total_races - data['rides_done']
+            jockey = r.get('jockey', r.get('driver', r.get('name', '')))
+            position = r.get('position', 0)
+            
+            if jockey in self.participants and position in [1, 2, 3]:
+                participants_in_race.add(jockey)
                 
-                for r in results:
-                    jockey = r.get('jockey') or r.get('driver')
-                    if jockey == name:
-                        pos = r['position']
-                        points = points_map.get(pos, 0)
-                        
-                        if pos == 1:
-                            data['wins'] += 1
-                        elif pos == 2:
-                            data['seconds'] += 1
-                        elif pos == 3:
-                            data['thirds'] += 1
-                        
-                        data['last_race_points'] = points
-                        data['points'] += points
-                        data['history'].append((race_num, points, data['points']))
-                        break
+                # Calculate points with dead heat handling
+                num_at_position = position_counts.get(position, 1)
+                
+                if num_at_position > 1:
+                    # DEAD HEAT - Split the points that would be awarded
+                    # E.g., 2 dead heat for 1st: positions 1 and 2 are taken
+                    # Total points = 3 (1st) + 2 (2nd) = 5, split = 2.5 each
+                    
+                    # Calculate which positions are "consumed" by dead heat
+                    positions_consumed = list(range(position, min(position + num_at_position, 4)))
+                    total_points = sum(points_map.get(p, 0) for p in positions_consumed)
+                    points = total_points / num_at_position
                 else:
-                    data['last_race_points'] = 0
-                    data['history'].append((race_num, 0, data['points']))
-            else:
-                data['last_race_points'] = 0
+                    points = points_map.get(position, 0)
+                
+                # Round to 1 decimal for clean 0.5 values
+                points = round(points, 1)
+                
+                self.participants[jockey]['current_points'] += points
+                self.participants[jockey]['positions'].append(position)
+                self.participants[jockey]['points_history'].append(points)
+                self.participants[jockey]['rides_remaining'] -= 1
         
-        self._update_leader()
-        self.calculate_ai_prices()
-        
-        if self.races_completed >= self.total_races:
-            self.status = 'completed'
-        else:
-            self.status = 'in_progress'
-            
-        self.last_updated = datetime.now().isoformat()
-        
-    def _update_leader(self):
-        """Update who is the leader"""
-        max_points = 0
-        leaders = []
-        
+        # Mark non-placed participants as having completed a ride (0 points)
         for name, data in self.participants.items():
-            if data['points'] > max_points:
-                max_points = data['points']
-                leaders = [name]
-            elif data['points'] == max_points and max_points > 0:
-                leaders.append(name)
+            if name not in participants_in_race and data['rides_remaining'] > 0:
+                data['rides_remaining'] -= 1
+                data['positions'].append(0)  # 0 = unplaced
+                data['points_history'].append(0)
         
-        for name, data in self.participants.items():
-            data['is_leader'] = name in leaders
-            
-    def calculate_ai_prices(self):
-        """Calculate AI win probability and prices based on current standings"""
+        self.races_completed = race_num
+        self.race_results.append({
+            'race': race_num,
+            'results': results,
+            'dead_heats': {pos: count for pos, count in position_counts.items() if count > 1},
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        self._recalculate_ai_prices()
+        self.updated_at = datetime.now()
+    
+    def _recalculate_ai_prices(self):
+        """Recalculate AI prices based on current standings with adjustable margin"""
         if not self.participants:
             return
-            
-        points_list = [(name, data['points'], data['rides_left']) 
-                       for name, data in self.participants.items() 
-                       if not data['is_scratched']]
         
-        if not points_list:
-            return
-            
-        total_score = 0
-        scores = {}
-        
-        for name, points, rides_left in points_list:
-            base_score = points + 1
-            opportunity = 1 + (rides_left * 0.3)
-            
-            data = self.participants[name]
-            if data['rides_done'] > 0:
-                win_rate = data['wins'] / data['rides_done']
-            else:
-                win_rate = 0.15
-            win_factor = 1 + win_rate
-            
-            score = base_score * opportunity * win_factor
-            scores[name] = score
-            total_score += score
-        
-        for name, score in scores.items():
-            if total_score > 0:
-                win_pct = (score / total_score) * 100
-                self.participants[name]['ai_win_pct'] = round(win_pct, 1)
-                
-                if win_pct > 0:
-                    fair_price = 100 / win_pct
-                    self.participants[name]['ai_price'] = round(fair_price * 0.95, 2)
-                else:
-                    self.participants[name]['ai_price'] = 999.0
-                    
-    def get_standings(self):
-        """Get current standings sorted by points"""
         standings = []
         for name, data in self.participants.items():
-            if data['is_scratched']:
-                continue
+            current_points = data['current_points']
+            races_done = self.races_completed
+            rides_remaining = data['rides_remaining']
+            
+            if races_done > 0:
+                # Average points per race
+                avg_points = current_points / races_done
+                estimated_final = current_points + (avg_points * rides_remaining)
+            else:
+                # Use starting odds to estimate
+                estimated_final = 1 / data['starting_odds'] if data['starting_odds'] > 0 else 0
+            
             standings.append({
                 'name': name,
-                'rides_done': data['rides_done'],
-                'rides_left': data['rides_left'],
-                'wins': data['wins'],
-                'seconds': data['seconds'],
-                'thirds': data['thirds'],
-                'points': data['points'],
-                'last_race_points': data['last_race_points'],
-                'ai_win_pct': data['ai_win_pct'],
-                'ai_price': data['ai_price'],
-                'is_leader': data['is_leader'],
-                'current_odds': data['current_odds'],
-                'history': data['history']
+                'current_points': current_points,
+                'estimated_final': estimated_final,
+                'probability': 0
             })
         
-        standings.sort(key=lambda x: (-x['points'], -x['wins']))
-        return standings
-    
-    def get_race_progression_table(self):
-        """Get race-by-race points progression"""
-        if not self.race_results:
-            return []
+        # Sort by current points (descending)
+        standings.sort(key=lambda x: (-x['current_points'], -x['estimated_final']))
+        
+        # Calculate probabilities
+        total_estimated = sum(s['estimated_final'] for s in standings) or 1
+        
+        for s in standings:
+            s['probability'] = (s['estimated_final'] / total_estimated) * 100
+        
+        # Update participants with AI prices using adjustable margin
+        for s in standings:
+            name = s['name']
+            prob = s['probability']
             
-        progression = []
+            if prob > 0:
+                fair_price = 100 / prob
+                ai_price = fair_price * self.margin  # Use adjustable margin
+            else:
+                ai_price = 999
+            
+            self.participants[name]['ai_price'] = round(ai_price, 2)
+            self.participants[name]['value'] = 'YES' if self.participants[name]['starting_odds'] > ai_price else 'NO'
+    
+    def get_leaderboard(self) -> List[dict]:
+        """Get current leaderboard sorted by points"""
+        leaderboard = []
         for name, data in self.participants.items():
-            if data['is_scratched']:
-                continue
-            row = {
+            leaderboard.append({
                 'name': name,
-                'races': {},
-                'total': data['points']
-            }
-            for race_num, points_gained, cumulative in data['history']:
-                row['races'][f'R{race_num}'] = {
-                    'gained': points_gained,
-                    'cumulative': cumulative,
-                    'display': f"+{points_gained} ({cumulative})" if points_gained > 0 else f"0 ({cumulative})"
-                }
-            progression.append(row)
+                'points': data['current_points'],
+                'rides_remaining': data['rides_remaining'],
+                'rides_total': data['rides_total'],
+                'starting_odds': data['starting_odds'],
+                'ai_price': data['ai_price'],
+                'value': data['value'],
+                'positions': data['positions'],
+                'points_history': data.get('points_history', [])
+            })
         
-        progression.sort(key=lambda x: -x['total'])
-        return progression
+        leaderboard.sort(key=lambda x: (-x['points'], x['ai_price']))
+        
+        # Add rank
+        for i, item in enumerate(leaderboard):
+            item['rank'] = i + 1
+        
+        return leaderboard
     
-    def get_value_bets(self, min_edge=10):
-        """Find value bets where AI price is better than bookmaker odds"""
-        value_bets = []
-        
-        for name, data in self.participants.items():
-            if data['is_scratched']:
-                continue
-                
-            ai_price = data['ai_price']
-            
-            for bookmaker, odds in data['current_odds'].items():
-                if odds > ai_price:
-                    edge = ((odds / ai_price) - 1) * 100
-                    if edge >= min_edge:
-                        value_bets.append({
-                            'participant': name,
-                            'bookmaker': bookmaker,
-                            'bookmaker_odds': odds,
-                            'ai_price': ai_price,
-                            'edge': round(edge, 1),
-                            'ai_win_pct': data['ai_win_pct']
-                        })
-        
-        value_bets.sort(key=lambda x: -x['edge'])
-        return value_bets
-    
-    def to_dict(self):
-        """Convert to dictionary for API response"""
+    def to_dict(self) -> dict:
+        """Convert tracker to dictionary for API response"""
         return {
-            'meeting': self.meeting,
-            'type': self.type,
-            'status': self.status,
+            'meeting': self.meeting_name,
+            'type': self.meeting_type,
+            'margin': self.margin,
             'total_races': self.total_races,
             'races_completed': self.races_completed,
-            'last_updated': self.last_updated,
-            'standings': self.get_standings(),
-            'progression': self.get_race_progression_table(),
-            'value_bets': self.get_value_bets(),
-            'bookmakers': list(self.bookmaker_odds.keys())
+            'races_remaining': self.total_races - self.races_completed,
+            'leaderboard': self.get_leaderboard(),
+            'race_results': self.race_results,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat()
         }
 
 
-def create_example_tracker():
-    """Create an example tracker with sample data"""
-    tracker = LiveMeetingTracker('RANDWICK', 'jockey')
-    
-    initial_odds = [
-        {'name': 'James McDonald', 'odds': 2.40},
-        {'name': 'Hugh Bowman', 'odds': 3.60},
-        {'name': 'Blake Shinn', 'odds': 5.80},
-        {'name': 'Mark Zahra', 'odds': 8.00},
-        {'name': 'Tommy Berry', 'odds': 12.00},
-    ]
-    tracker.initialize_participants(initial_odds, total_races=8)
-    
-    tracker.add_bookmaker_odds('tab', [
-        {'name': 'James McDonald', 'odds': 2.50},
-        {'name': 'Hugh Bowman', 'odds': 3.80},
-        {'name': 'Blake Shinn', 'odds': 6.00},
-        {'name': 'Mark Zahra', 'odds': 7.50},
-        {'name': 'Tommy Berry', 'odds': 15.00},
-    ])
-    
-    tracker.add_bookmaker_odds('sportsbet', [
-        {'name': 'James McDonald', 'odds': 2.45},
-        {'name': 'Hugh Bowman', 'odds': 3.70},
-        {'name': 'Blake Shinn', 'odds': 5.50},
-        {'name': 'Mark Zahra', 'odds': 8.50},
-        {'name': 'Tommy Berry', 'odds': 13.00},
-    ])
-    
-    # Simulate Race 1
-    tracker.update_race_result(1, [
-        {'position': 1, 'jockey': 'James McDonald'},
-        {'position': 2, 'jockey': 'Hugh Bowman'},
-        {'position': 3, 'jockey': 'Tommy Berry'},
-        {'position': 4, 'jockey': 'Blake Shinn'},
-    ])
-    
-    # Simulate Race 2
-    tracker.update_race_result(2, [
-        {'position': 1, 'jockey': 'Blake Shinn'},
-        {'position': 2, 'jockey': 'James McDonald'},
-        {'position': 3, 'jockey': 'Hugh Bowman'},
-        {'position': 4, 'jockey': 'Mark Zahra'},
-    ])
-    
-    # Simulate Race 3
-    tracker.update_race_result(3, [
-        {'position': 1, 'jockey': 'Hugh Bowman'},
-        {'position': 2, 'jockey': 'Mark Zahra'},
-        {'position': 3, 'jockey': 'James McDonald'},
-        {'position': 4, 'jockey': 'Tommy Berry'},
-    ])
-    
-    # Simulate Race 4
-    tracker.update_race_result(4, [
-        {'position': 1, 'jockey': 'James McDonald'},
-        {'position': 2, 'jockey': 'Hugh Bowman'},
-        {'position': 3, 'jockey': 'Mark Zahra'},
-        {'position': 4, 'jockey': 'Blake Shinn'},
-    ])
-    
-    return tracker
-
-
-if __name__ == '__main__':
-    tracker = create_example_tracker()
-    
-    print("\n" + "="*80)
-    print(f"  {tracker.meeting} - JOCKEY CHALLENGE TRACKER")
-    print(f"  Status: {tracker.status} | Races: {tracker.races_completed}/{tracker.total_races}")
-    print("="*80)
-    
-    print("\n  CURRENT STANDINGS")
-    print("-"*100)
-    print(f"{'Jockey':<20} {'Done':>5} {'Left':>5} {'Wins':>5} {'2nds':>5} {'Pts':>5} {'Last':>6} {'AI %':>7} {'AI $':>8} {'Leader':<8}")
-    print("-"*100)
-    
-    for s in tracker.get_standings():
-        leader = "LEADER" if s['is_leader'] else ""
-        last = f"+{s['last_race_points']}" if s['last_race_points'] > 0 else "0"
-        print(f"{s['name']:<20} {s['rides_done']:>5} {s['rides_left']:>5} {s['wins']:>5} {s['seconds']:>5} {s['points']:>5} {last:>6} {s['ai_win_pct']:>6}% ${s['ai_price']:>7.2f} {leader}")
-    
-    print("\n  RACE-BY-RACE PROGRESSION")
-    print("-"*80)
-    header = f"{'Jockey':<20}"
-    for i in range(1, tracker.races_completed + 1):
-        header += f"{'R' + str(i):>12}"
-    header += f"{'Total':>8}"
-    print(header)
-    print("-"*80)
-    
-    for p in tracker.get_race_progression_table():
-        row = f"{p['name']:<20}"
-        for i in range(1, tracker.races_completed + 1):
-            race_key = f'R{i}'
-            if race_key in p['races']:
-                row += f"{p['races'][race_key]['display']:>12}"
-            else:
-                row += f"{'-':>12}"
-        row += f"{p['total']:>8}"
-        print(row)
-    
-    print("\n  VALUE BETS (Edge > 10%)")
-    print("-"*70)
-    value_bets = tracker.get_value_bets(min_edge=10)
-    if value_bets:
-        for vb in value_bets:
-            print(f"  {vb['participant']}: {vb['bookmaker']} ${vb['bookmaker_odds']:.2f} vs AI ${vb['ai_price']:.2f} = {vb['edge']:.1f}% edge")
-    else:
-        print("  No value bets found")
-    
-    print("\n" + "="*80)
+# Dead Heat Examples:
+# ------------------
+# Dead heat 1st (2 runners): 
+#   Positions consumed: 1, 2
+#   Total points: 3 + 2 = 5
+#   Each gets: 5 / 2 = 2.5 points
+#
+# Dead heat 2nd (2 runners):
+#   Positions consumed: 2, 3
+#   Total points: 2 + 1 = 3
+#   Each gets: 3 / 2 = 1.5 points
+#
+# Dead heat 3rd (2 runners):
+#   Positions consumed: 3 (only 3rd pays)
+#   Total points: 1
+#   Each gets: 1 / 2 = 0.5 points
+#
+# Dead heat 1st (3 runners):
+#   Positions consumed: 1, 2, 3
+#   Total points: 3 + 2 + 1 = 6
+#   Each gets: 6 / 3 = 2.0 points
