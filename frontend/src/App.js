@@ -27,7 +27,8 @@ function App() {
     }
 
     try {
-      const baseUrl = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000";
+      // const baseUrl = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000"; // stag
+      const baseUrl = process.env.REACT_APP_API_URL || "https://api.jockeydriverchallenge.com"; // prod
       const response = await fetch(`${baseUrl}/api/ai-prices/`);
       const result = await response.json();
 
