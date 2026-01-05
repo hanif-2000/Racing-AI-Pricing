@@ -955,6 +955,12 @@ async def fetch_all_data():
         au_d = len([m for m in driver_meetings if m.get('country') == 'AU'])
         nz_d = len([m for m in driver_meetings if m.get('country') == 'NZ'])
         
+        # Auto-save to database
+        try:
+            save_meetings_to_db(jockey_meetings, driver_meetings)
+        except Exception as e:
+            print(f"💾 DB Error: {e}")
+        
         print(f"\n✅ COMPLETE! Jockey: {len(jockey_meetings)} (AU:{au_j}, NZ:{nz_j}) | Driver: {len(driver_meetings)} (AU:{au_d}, NZ:{nz_d})\n")
         
     except Exception as e:
@@ -967,3 +973,64 @@ async def fetch_all_data():
         'driver_challenges': driver_meetings,
         'last_updated': CACHE['last_updated']
     }
+
+# =====================================================
+# 💾 AUTO-SAVE MEETINGS TO DATABASE
+# =====================================================
+
+def save_meetings_to_db(jockey_meetings, driver_meetings):
+    """Save scraped meetings to database - thread safe"""
+    import threading
+    import os
+    
+    def _save_sync():
+        try:
+            os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+            import django
+            django.setup()
+            
+            from racing.models import Meeting, Participant, MeetingOdds
+            from datetime import date as dt_date
+            
+            today = dt_date.today()
+            saved_count = 0
+            odds_count = 0
+            
+            for meeting_data in jockey_meetings + driver_meetings:
+                try:
+                    meeting, created = Meeting.objects.get_or_create(
+                        name=meeting_data['meeting'].upper(),
+                        date=today,
+                        type=meeting_data.get('type', 'jockey'),
+                        defaults={
+                            'country': meeting_data.get('country', 'AU'),
+                            'status': 'upcoming'
+                        }
+                    )
+                    
+                    participants = meeting_data.get('jockeys') or meeting_data.get('drivers') or []
+                    bookmaker = meeting_data.get('source', 'unknown')
+                    
+                    for p in participants:
+                        Participant.objects.get_or_create(meeting=meeting, name=p['name'])
+                        MeetingOdds.objects.create(
+                            meeting=meeting,
+                            participant_name=p['name'],
+                            bookmaker=bookmaker,
+                            odds=p['odds']
+                        )
+                        odds_count += 1
+                    
+                    if created:
+                        saved_count += 1
+                except Exception as e:
+                    pass
+            
+            print(f"💾 Saved {saved_count} new meetings, {odds_count} odds to DB")
+        except Exception as e:
+            print(f"💾 DB Error: {e}")
+    
+    # Run in separate thread to avoid async conflict
+    thread = threading.Thread(target=_save_sync, daemon=True)
+    thread.start()
+

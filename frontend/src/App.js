@@ -1,9 +1,10 @@
-// src/App.js - UPDATED WITH LIVE TRACKER
+// src/App.js - UPDATED WITH CALENDAR & HISTORY
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import PricesTab from './components/PricesTab';
 import BetTracker from './components/BetTracker';
 import HistoryTab from './components/HistoryTab';
+import CalendarTab from './components/CalendarTab';
 import LiveTracker from './components/LiveTracker';
 import LoadingShimmer from './components/LoadingShimmer';
 import './App.css';
@@ -99,10 +100,16 @@ function App() {
               <span>💰</span> Bet Tracker
             </button>
             <button 
+              onClick={() => setActiveTab('calendar')}
+              className={`tab ${activeTab === 'calendar' ? 'active tab-orange' : ''}`}
+            >
+              <span>📅</span> Calendar
+            </button>
+            <button 
               onClick={() => setActiveTab('history')}
               className={`tab ${activeTab === 'history' ? 'active tab-purple' : ''}`}
             >
-              <span>📅</span> History
+              <span>📜</span> History
             </button>
           </div>
         </div>
@@ -164,6 +171,8 @@ function App() {
             <LiveTracker data={data} />
           ) : activeTab === 'tracker' ? (
             <BetTracker />
+          ) : activeTab === 'calendar' ? (
+            <CalendarTab />
           ) : (
             <HistoryTab />
           )}
@@ -171,7 +180,7 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>🏇 Racing AI Pricing • Live data from 6 Bookmakers • Jockey & Driver Challenges</p>
+        <p>🏇 Racing AI Pricing • Live data from 6 Bookmakers • AU & NZ Challenges</p>
       </footer>
     </div>
   );

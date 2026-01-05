@@ -1,51 +1,42 @@
 import React, { useState, useEffect } from 'react';
 
-function HistoryTab() {
+function CalendarTab() {
+  const [calendarData, setCalendarData] = useState({});
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [historyData, setHistoryData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [daysFilter, setDaysFilter] = useState(30);
+  const [meetingDetails, setMeetingDetails] = useState(null);
 
-  // Fetch history from API
+  // Fetch calendar data from API
   useEffect(() => {
-    fetchHistory();
-  }, [daysFilter]);
+    fetchCalendar();
+  }, []);
 
-  const fetchHistory = async () => {
+  const fetchCalendar = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`http://127.0.0.1:8000/api/history/?days=${daysFilter}`);
+      const res = await fetch('http://127.0.0.1:8000/api/calendar/');
       const data = await res.json();
       if (data.success) {
-        setHistoryData(data.history || []);
+        setCalendarData(data.calendar || {});
       }
     } catch (err) {
-      console.error('History fetch error:', err);
+      console.error('Calendar fetch error:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  // Get meetings for selected date
-  const getDateMeetings = (date) => {
-    const dateStr = date.toISOString().split('T')[0];
-    return historyData.filter(m => m.date === dateStr);
-  };
-
-  // Get meetings for current month
-  const getMonthStats = () => {
-    const monthMeetings = historyData.filter(m => {
-      const meetDate = new Date(m.date);
-      return meetDate.getMonth() === currentMonth.getMonth() && 
-             meetDate.getFullYear() === currentMonth.getFullYear();
-    });
-    
-    const completed = monthMeetings.filter(m => m.status === 'completed').length;
-    const auCount = monthMeetings.filter(m => m.country === 'AU').length;
-    const nzCount = monthMeetings.filter(m => m.country === 'NZ').length;
-    
-    return { total: monthMeetings.length, completed, auCount, nzCount };
+  const fetchMeetingDetail = async (meetingId) => {
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/api/meeting/${meetingId}/`);
+      const data = await res.json();
+      if (data.success) {
+        setMeetingDetails(data);
+      }
+    } catch (err) {
+      console.error('Meeting detail error:', err);
+    }
   };
 
   // Calendar helpers
@@ -73,6 +64,7 @@ function HistoryTab() {
   const selectDate = (day) => {
     const newDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
     setSelectedDate(newDate);
+    setMeetingDetails(null);
   };
 
   const isToday = (day) => {
@@ -93,65 +85,49 @@ function HistoryTab() {
     return d.toISOString().split('T')[0];
   };
 
-  const hasMeetings = (day) => {
+  const getMeetingsForDay = (day) => {
     const dateStr = getDateString(day);
-    return historyData.some(m => m.date === dateStr);
+    return calendarData[dateStr] || [];
   };
 
-  const getDayStatus = (day) => {
-    const dateStr = getDateString(day);
-    const meetings = historyData.filter(m => m.date === dateStr);
-    if (meetings.length === 0) return 'none';
-    const allCompleted = meetings.every(m => m.status === 'completed');
-    return allCompleted ? 'completed' : 'partial';
+  const hasMeetings = (day) => {
+    return getMeetingsForDay(day).length > 0;
   };
 
   const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                       'July', 'August', 'September', 'October', 'November', 'December'];
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-  const selectedDateMeetings = getDateMeetings(selectedDate);
-  const monthStats = getMonthStats();
+  const selectedDateStr = selectedDate.toISOString().split('T')[0];
+  const selectedMeetings = calendarData[selectedDateStr] || [];
 
   if (loading) {
     return (
-      <div className="history-tab">
-        <div className="loading-spinner">Loading history...</div>
+      <div className="calendar-tab">
+        <div className="loading-spinner">Loading calendar...</div>
       </div>
     );
   }
 
   return (
-    <div className="history-tab">
-      {/* Month Stats */}
+    <div className="calendar-tab">
+      {/* Stats Bar */}
       <div className="month-stats-bar">
         <div className="month-stat">
-          <span className="stat-label">Month Meetings</span>
-          <span className="stat-value">{monthStats.total}</span>
+          <span className="stat-label">Today's Meetings</span>
+          <span className="stat-value">{calendarData[new Date().toISOString().split('T')[0]]?.length || 0}</span>
         </div>
         <div className="month-stat">
-          <span className="stat-label">Completed</span>
-          <span className="stat-value green">{monthStats.completed}</span>
+          <span className="stat-label">Total This Week</span>
+          <span className="stat-value">{Object.values(calendarData).flat().length}</span>
         </div>
         <div className="month-stat">
           <span className="stat-label">🇦🇺 AU</span>
-          <span className="stat-value">{monthStats.auCount}</span>
+          <span className="stat-value">{Object.values(calendarData).flat().filter(m => m.country === 'AU').length}</span>
         </div>
         <div className="month-stat">
           <span className="stat-label">🇳🇿 NZ</span>
-          <span className="stat-value green">{monthStats.nzCount}</span>
-        </div>
-        <div className="month-stat">
-          <select 
-            value={daysFilter} 
-            onChange={(e) => setDaysFilter(Number(e.target.value))}
-            className="days-filter"
-          >
-            <option value={7}>Last 7 days</option>
-            <option value={14}>Last 14 days</option>
-            <option value={30}>Last 30 days</option>
-            <option value={90}>Last 90 days</option>
-          </select>
+          <span className="stat-value green">{Object.values(calendarData).flat().filter(m => m.country === 'NZ').length}</span>
         </div>
       </div>
 
@@ -175,7 +151,8 @@ function HistoryTab() {
             
             {Array.from({ length: daysInMonth }).map((_, i) => {
               const day = i + 1;
-              const status = getDayStatus(day);
+              const meetings = getMeetingsForDay(day);
+              const hasNZ = meetings.some(m => m.country === 'NZ');
               
               return (
                 <div
@@ -185,13 +162,14 @@ function HistoryTab() {
                     ${isToday(day) ? 'today' : ''} 
                     ${isSelected(day) ? 'selected' : ''}
                     ${hasMeetings(day) ? 'has-bets' : ''}
-                    ${status === 'completed' ? 'profit' : ''}
-                    ${status === 'partial' ? 'pending' : ''}
+                    ${hasNZ ? 'has-nz' : ''}
                   `}
                 >
                   <span className="day-number">{day}</span>
                   {hasMeetings(day) && (
-                    <span className="day-indicator">●</span>
+                    <span className="day-indicator" title={`${meetings.length} meeting(s)`}>
+                      {meetings.length}
+                    </span>
                   )}
                 </div>
               );
@@ -199,9 +177,9 @@ function HistoryTab() {
           </div>
 
           <div className="calendar-legend">
-            <span className="legend-item"><span className="dot green"></span> Completed</span>
-            <span className="legend-item"><span className="dot yellow"></span> Partial</span>
-            <span className="legend-item"><span className="dot gray"></span> No Data</span>
+            <span className="legend-item"><span className="dot green"></span> Has NZ</span>
+            <span className="legend-item"><span className="dot blue"></span> AU Only</span>
+            <span className="legend-item"><span className="dot gray"></span> No Meetings</span>
           </div>
         </div>
 
@@ -209,33 +187,37 @@ function HistoryTab() {
         <div className="date-details">
           <div className="date-header">
             <h3>📅 {selectedDate.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</h3>
-            <button onClick={fetchHistory} className="refresh-btn">🔄 Refresh</button>
+            <button onClick={fetchCalendar} className="refresh-btn">🔄 Refresh</button>
           </div>
 
-          {selectedDateMeetings.length > 0 ? (
+          {selectedMeetings.length > 0 ? (
             <>
               <div className="date-summary">
                 <div className="summary-item">
                   <span>Total Meetings</span>
-                  <span className="value">{selectedDateMeetings.length}</span>
+                  <span className="value">{selectedMeetings.length}</span>
                 </div>
                 <div className="summary-item">
                   <span>🏇 Jockey</span>
-                  <span className="value">{selectedDateMeetings.filter(m => m.type === 'jockey').length}</span>
+                  <span className="value">{selectedMeetings.filter(m => m.type === 'jockey').length}</span>
                 </div>
                 <div className="summary-item">
                   <span>🏎️ Driver</span>
-                  <span className="value">{selectedDateMeetings.filter(m => m.type === 'driver').length}</span>
+                  <span className="value">{selectedMeetings.filter(m => m.type === 'driver').length}</span>
                 </div>
                 <div className="summary-item">
-                  <span>Completed</span>
-                  <span className="value green">{selectedDateMeetings.filter(m => m.status === 'completed').length}</span>
+                  <span>🇳🇿 NZ</span>
+                  <span className="value green">{selectedMeetings.filter(m => m.country === 'NZ').length}</span>
                 </div>
               </div>
 
               <div className="date-bets-list">
-                {selectedDateMeetings.map(meeting => (
-                  <div key={meeting.id} className={`date-bet-card ${meeting.status}`}>
+                {selectedMeetings.map(meeting => (
+                  <div 
+                    key={meeting.id} 
+                    className={`date-bet-card ${meeting.status}`}
+                    onClick={() => fetchMeetingDetail(meeting.id)}
+                  >
                     <div className="bet-main">
                       <span className="bet-type">{meeting.type === 'jockey' ? '🏇' : '🏎️'}</span>
                       <div className="bet-info">
@@ -248,31 +230,46 @@ function HistoryTab() {
                         {meeting.country === 'NZ' ? '🇳🇿' : '🇦🇺'} {meeting.country}
                       </span>
                       <span className={`status-badge ${meeting.status}`}>
-                        {meeting.status === 'completed' ? '✅' : '⏳'} {meeting.status}
+                        {meeting.status === 'upcoming' ? '⏳' : meeting.status === 'live' ? '🔴' : '✅'} {meeting.status}
                       </span>
                     </div>
-                    
-                    {/* Show participants if available */}
-                    {meeting.participants && meeting.participants.length > 0 && (
-                      <div className="participants-preview">
-                        <strong>Results:</strong>
-                        <ol className="results-list">
-                          {meeting.participants.slice(0, 3).map((p, idx) => (
-                            <li key={idx}>
-                              {p.name} {p.final_points ? `- ${p.final_points} pts` : ''}
-                            </li>
-                          ))}
-                        </ol>
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>
+
+              {/* Meeting Details Modal */}
+              {meetingDetails && (
+                <div className="meeting-detail-card">
+                  <div className="detail-header">
+                    <h4>{meetingDetails.meeting?.name}</h4>
+                    <button onClick={() => setMeetingDetails(null)} className="close-btn">✕</button>
+                  </div>
+                  <div className="detail-body">
+                    <p><strong>Type:</strong> {meetingDetails.meeting?.type}</p>
+                    <p><strong>Country:</strong> {meetingDetails.meeting?.country}</p>
+                    <p><strong>Status:</strong> {meetingDetails.meeting?.status}</p>
+                    
+                    {meetingDetails.participants?.length > 0 && (
+                      <>
+                        <h5>Participants:</h5>
+                        <ul className="participants-list">
+                          {meetingDetails.participants.map((p, idx) => (
+                            <li key={idx}>
+                              {p.position ? `#${p.position} ` : ''}{p.name}
+                              {p.final_points ? ` - ${p.final_points} pts` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <div className="no-bets-day">
               <span className="empty-icon">📭</span>
-              <p>No meetings recorded for this day</p>
+              <p>No meetings scheduled for this day</p>
             </div>
           )}
         </div>
@@ -281,4 +278,4 @@ function HistoryTab() {
   );
 }
 
-export default HistoryTab;
+export default CalendarTab;
