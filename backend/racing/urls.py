@@ -9,6 +9,9 @@ urlpatterns = [
     path('comparison/', views.get_comparison, name='comparison'),
     path('refresh/', views.refresh_data, name='refresh'),
     
+    # GitHub Actions endpoint (NEW)
+    path('receive-scrape/', views.receive_scrape, name='receive_scrape'),
+    
     # Bet tracker
     path('bets/', views.get_bets, name='get_bets'),
     path('bets/add/', views.add_bet, name='add_bet'),

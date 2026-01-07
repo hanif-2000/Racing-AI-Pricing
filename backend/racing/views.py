@@ -1,9 +1,8 @@
 """
 🏇 RACING VIEWS - PRODUCTION VERSION
+- GitHub Actions integration
 - No duplicate functions
 - Proper error handling
-- Input validation
-- Clean API responses
 """
 
 from django.http import JsonResponse
@@ -14,8 +13,86 @@ import json
 import threading
 from datetime import date, timedelta
 
-from .scraper import fetch_all_data, get_cached_data, has_cached_data, CACHE, is_cache_stale, run_scraper_background
 from .models import Meeting, Participant, MeetingOdds
+
+
+# =====================================================
+# SCRAPED DATA CACHE (from GitHub Actions)
+# =====================================================
+
+SCRAPED_DATA = {
+    'jockey_challenges': [],
+    'driver_challenges': [],
+    'last_updated': None
+}
+
+
+# =====================================================
+# RECEIVE SCRAPED DATA FROM GITHUB ACTIONS
+# =====================================================
+
+@csrf_exempt
+def receive_scrape(request):
+    """
+    Receive scraped data from GitHub Actions
+    POST https://api.jockeydriverchallenge.com/api/receive-scrape/
+    """
+    global SCRAPED_DATA
+    
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        
+        # Update cache
+        SCRAPED_DATA['jockey_challenges'] = data.get('jockey_challenges', [])
+        SCRAPED_DATA['driver_challenges'] = data.get('driver_challenges', [])
+        SCRAPED_DATA['last_updated'] = data.get('last_updated')
+        
+        jockey_count = len(SCRAPED_DATA['jockey_challenges'])
+        driver_count = len(SCRAPED_DATA['driver_challenges'])
+        
+        print(f"✅ Received from GitHub: {jockey_count} jockey, {driver_count} driver meetings")
+        
+        # Also save to database for calendar/history
+        save_meetings_to_db(SCRAPED_DATA)
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Data received from GitHub Actions',
+            'jockey_meetings': jockey_count,
+            'driver_meetings': driver_count,
+            'last_updated': SCRAPED_DATA['last_updated']
+        })
+        
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+def save_meetings_to_db(data):
+    """Save meetings to database for calendar/history"""
+    today = date.today()
+    
+    for m in data.get('jockey_challenges', []):
+        meeting, _ = Meeting.objects.get_or_create(
+            name=m['meeting'].upper(),
+            date=today,
+            type='jockey',
+            defaults={'country': m.get('country', 'AU'), 'status': 'upcoming'}
+        )
+        for j in m.get('jockeys', []):
+            Participant.objects.get_or_create(meeting=meeting, name=j['name'])
+    
+    for m in data.get('driver_challenges', []):
+        meeting, _ = Meeting.objects.get_or_create(
+            name=m['meeting'].upper(),
+            date=today,
+            type='driver',
+            defaults={'country': m.get('country', 'AU'), 'status': 'upcoming'}
+        )
+        for d in m.get('drivers', []):
+            Participant.objects.get_or_create(meeting=meeting, name=d['name'])
 
 
 # =====================================================
@@ -79,9 +156,10 @@ def process_meetings(jockey_meetings, driver_meetings, margin=1.30):
 
 @csrf_exempt
 def get_ai_prices(request):
-    """Main API - Get all AI prices with bookmaker comparison"""
+    """Main API - Get all AI prices (uses GitHub Actions data)"""
+    global SCRAPED_DATA
+    
     try:
-        # Get parameters
         country = request.GET.get('country', 'ALL').upper()
         margin = float(request.GET.get('margin', 1.30))
         
@@ -90,54 +168,15 @@ def get_ai_prices(request):
                 return meetings
             return [m for m in meetings if m.get('country', 'AU') == country]
         
-        # Return cache if available
-        if has_cached_data():
-            cached = get_cached_data()
-            jockey = filter_country(cached.get('jockey_challenges', []))
-            driver = filter_country(cached.get('driver_challenges', []))
-            
-            jockey, driver, jv, dv = process_meetings(jockey, driver, margin)
-            
-            # Refresh in background if stale
-            if is_cache_stale() and not CACHE.is_scraping:
-                run_scraper_background()
-            
-            all_j = cached.get('jockey_challenges', [])
-            all_d = cached.get('driver_challenges', [])
-            au = len([m for m in all_j + all_d if m.get('country') == 'AU'])
-            nz = len([m for m in all_j + all_d if m.get('country') == 'NZ'])
-            
-            return JsonResponse({
-                'success': True,
-                'jockey_challenges': jockey,
-                'driver_challenges': driver,
-                'summary': {
-                    'total_jockey_meetings': len(jockey),
-                    'total_driver_meetings': len(driver),
-                    'jockey_value_bets': jv,
-                    'driver_value_bets': dv,
-                    'total_value_bets': jv + dv,
-                    'au_meetings': au,
-                    'nz_meetings': nz
-                },
-                'country_filter': country,
-                'margin': margin,
-                'last_updated': cached.get('last_updated'),
-                'from_cache': True
-            })
+        # Use data from GitHub Actions
+        jockey = filter_country(SCRAPED_DATA.get('jockey_challenges', []))
+        driver = filter_country(SCRAPED_DATA.get('driver_challenges', []))
         
-        # No cache - fetch fresh
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(fetch_all_data())
-        loop.close()
+        # Process with AI prices
+        jockey, driver, jv, dv = process_meetings(jockey.copy(), driver.copy(), margin)
         
-        jockey = filter_country(result.get('jockey_challenges', []))
-        driver = filter_country(result.get('driver_challenges', []))
-        jockey, driver, jv, dv = process_meetings(jockey, driver, margin)
-        
-        all_j = result.get('jockey_challenges', [])
-        all_d = result.get('driver_challenges', [])
+        all_j = SCRAPED_DATA.get('jockey_challenges', [])
+        all_d = SCRAPED_DATA.get('driver_challenges', [])
         au = len([m for m in all_j + all_d if m.get('country') == 'AU'])
         nz = len([m for m in all_j + all_d if m.get('country') == 'NZ'])
         
@@ -156,8 +195,8 @@ def get_ai_prices(request):
             },
             'country_filter': country,
             'margin': margin,
-            'last_updated': result.get('last_updated'),
-            'from_cache': False
+            'last_updated': SCRAPED_DATA.get('last_updated'),
+            'source': 'github_actions'
         })
         
     except Exception as e:
@@ -171,58 +210,40 @@ def get_ai_prices(request):
 
 
 @csrf_exempt
-def refresh_data(request):
-    """Force refresh data"""
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(fetch_all_data())
-        loop.close()
-        return get_ai_prices(request)
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
-
-
-@csrf_exempt
 def get_jockey_challenges(request):
     """Get only jockey challenges"""
-    if has_cached_data():
-        cached = get_cached_data()
-        jockey, _, jv, _ = process_meetings(cached.get('jockey_challenges', []), [])
-        return JsonResponse({
-            'success': True,
-            'jockey_challenges': jockey,
-            'summary': {'total_meetings': len(jockey), 'total_value_bets': jv}
-        })
-    return get_ai_prices(request)
+    jockey = SCRAPED_DATA.get('jockey_challenges', [])
+    margin = float(request.GET.get('margin', 1.30))
+    jockey, _, jv, _ = process_meetings(jockey.copy(), [], margin)
+    return JsonResponse({
+        'success': True,
+        'jockey_challenges': jockey,
+        'summary': {'total_meetings': len(jockey), 'total_value_bets': jv}
+    })
 
 
 @csrf_exempt
 def get_driver_challenges(request):
     """Get only driver challenges"""
-    if has_cached_data():
-        cached = get_cached_data()
-        _, driver, _, dv = process_meetings([], cached.get('driver_challenges', []))
-        return JsonResponse({
-            'success': True,
-            'driver_challenges': driver,
-            'summary': {'total_meetings': len(driver), 'total_value_bets': dv}
-        })
-    return get_ai_prices(request)
+    driver = SCRAPED_DATA.get('driver_challenges', [])
+    margin = float(request.GET.get('margin', 1.30))
+    _, driver, _, dv = process_meetings([], driver.copy(), margin)
+    return JsonResponse({
+        'success': True,
+        'driver_challenges': driver,
+        'summary': {'total_meetings': len(driver), 'total_value_bets': dv}
+    })
 
 
 @csrf_exempt
 def get_comparison(request):
     """Get comparison data for all bookmakers"""
-    if has_cached_data():
-        cached = get_cached_data()
-        return JsonResponse({
-            'success': True,
-            'jockey_challenges': cached.get('jockey_challenges', []),
-            'driver_challenges': cached.get('driver_challenges', []),
-            'bookmakers': ['tab', 'sportsbet', 'tabtouch', 'ladbrokes', 'elitebet', 'pointsbet']
-        })
-    return get_ai_prices(request)
+    return JsonResponse({
+        'success': True,
+        'jockey_challenges': SCRAPED_DATA.get('jockey_challenges', []),
+        'driver_challenges': SCRAPED_DATA.get('driver_challenges', []),
+        'bookmakers': ['tab', 'sportsbet', 'tabtouch', 'ladbrokes', 'elitebet', 'pointsbet']
+    })
 
 
 # =====================================================
@@ -240,7 +261,6 @@ def add_bet(request):
     try:
         data = json.loads(request.body)
         
-        # Validation
         required = ['selection', 'odds', 'stake']
         for field in required:
             if field not in data:
@@ -400,7 +420,9 @@ def get_live_tracker(request, meeting_name):
 
 @csrf_exempt
 def init_live_tracker(request):
-    """Initialize a live tracker with adjustable margin"""
+    """Initialize a live tracker"""
+    global SCRAPED_DATA
+    
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
     
@@ -409,14 +431,14 @@ def init_live_tracker(request):
         meeting = data.get('meeting', '').upper()
         ctype = data.get('type', 'jockey')
         total_races = data.get('total_races', 8)
-        margin = float(data.get('margin', 1.30))  # Adjustable margin
+        margin = float(data.get('margin', 1.30))
         
-        # Get participants from cache
+        # Get participants from scraped data
         participants = []
-        key = 'jockey_challenges' if ctype == 'jockey' else 'driver_challenges'
+        challenges = SCRAPED_DATA.get('jockey_challenges' if ctype == 'jockey' else 'driver_challenges', [])
         
-        for item in CACHE.jockey_challenges if ctype == 'jockey' else CACHE.driver_challenges:
-            if item['meeting'] == meeting:
+        for item in challenges:
+            if item['meeting'].upper() == meeting:
                 pkey = 'jockeys' if ctype == 'jockey' else 'drivers'
                 participants = item.get(pkey, [])
                 break
@@ -424,7 +446,7 @@ def init_live_tracker(request):
         if not participants:
             return JsonResponse({'success': False, 'error': f'No data for {meeting}'}, status=404)
         
-        tracker = LiveMeetingTracker(meeting, ctype, margin)  # Pass margin
+        tracker = LiveMeetingTracker(meeting, ctype, margin)
         tracker.initialize_participants(participants, total_races)
         
         LIVE_TRACKERS[meeting] = tracker
@@ -436,7 +458,7 @@ def init_live_tracker(request):
 
 @csrf_exempt
 def update_tracker_margin(request):
-    """Update margin for a live tracker - AI prices will recalculate"""
+    """Update margin for a live tracker"""
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
     
@@ -445,15 +467,14 @@ def update_tracker_margin(request):
         meeting = data.get('meeting', '').upper()
         margin = float(data.get('margin', 1.30))
         
-        # Validate margin (100% to 150%)
         if margin < 1.0 or margin > 1.5:
-            return JsonResponse({'success': False, 'error': 'Margin must be between 1.0 (100%) and 1.5 (150%)'}, status=400)
+            return JsonResponse({'success': False, 'error': 'Margin must be between 1.0 and 1.5'}, status=400)
         
         if meeting not in LIVE_TRACKERS:
             return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
         
         tracker = LIVE_TRACKERS[meeting]
-        tracker.set_margin(margin)  # This recalculates AI prices
+        tracker.set_margin(margin)
         
         return JsonResponse({
             'success': True,
@@ -520,18 +541,18 @@ def calendar_view(request):
     
     return JsonResponse({'success': True, 'calendar': calendar, 'today': today.isoformat()})
 
+
 def history_view(request):
     """Get meetings with correct status based on date"""
     days = int(request.GET.get('days', 30))
     today = date.today()
     start = today - timedelta(days=days)
-    end = today + timedelta(days=7)  # Include upcoming meetings too
+    end = today + timedelta(days=7)
     
     meetings = Meeting.objects.filter(date__gte=start, date__lte=end).order_by('-date', 'name')
     
     history = []
     for m in meetings:
-        # Calculate status based on date
         if m.date < today:
             status = 'completed'
         elif m.date == today:
@@ -563,6 +584,7 @@ def history_view(request):
         'days': days,
         'today': today.isoformat()
     })
+
 
 def meeting_detail(request, meeting_id):
     """Get single meeting details"""
@@ -609,136 +631,3 @@ def save_meeting_result(request, meeting_id):
     m.save()
     
     return JsonResponse({'success': True, 'message': f'Saved {m.name}'})
-
-
-@csrf_exempt
-def save_meeting_from_scrape(request):
-    """Auto-save meeting from scrape"""
-    if request.method != 'POST':
-        return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
-    
-    data = json.loads(request.body)
-    today = date.today()
-    
-    m, created = Meeting.objects.get_or_create(
-        name=data['name'].upper(),
-        date=today,
-        type=data.get('type', 'jockey'),
-        defaults={'country': data.get('country', 'AU'), 'status': 'upcoming'}
-    )
-    
-    participants = data.get('jockeys') or data.get('drivers') or []
-    bookmaker = data.get('source', 'unknown')
-    
-    for p in participants:
-        Participant.objects.get_or_create(meeting=m, name=p['name'])
-        MeetingOdds.objects.create(meeting=m, participant_name=p['name'], bookmaker=bookmaker, odds=p['odds'])
-    
-    return JsonResponse({'success': True, 'meeting_id': m.id, 'created': created})
-
-
-# =====================================================
-# AUTO RESULTS
-# =====================================================
-
-@csrf_exempt
-def fetch_race_results_api(request, meeting_name):
-    """Fetch race results from Ladbrokes"""
-    from .results_scraper import fetch_race_results
-    
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        results = loop.run_until_complete(fetch_race_results(meeting_name))
-        loop.close()
-        
-        return JsonResponse({
-            'success': True,
-            'meeting': meeting_name.upper(),
-            'races': results.get('races', []),
-            'last_updated': results.get('last_updated')
-        })
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
-
-
-@csrf_exempt
-def auto_update_tracker(request):
-    """Auto-update tracker with latest results"""
-    if request.method != 'POST':
-        return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
-    
-    from .results_scraper import fetch_race_results
-    
-    try:
-        data = json.loads(request.body)
-        meeting = data.get('meeting', '').upper()
-        
-        if meeting not in LIVE_TRACKERS:
-            return JsonResponse({'success': False, 'error': 'Meeting not tracked'}, status=404)
-        
-        tracker = LIVE_TRACKERS[meeting]
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        results = loop.run_until_complete(fetch_race_results(meeting))
-        loop.close()
-        
-        new_races = 0
-        for race in results.get('races', []):
-            race_num = race['race']
-            if race_num <= tracker.races_completed:
-                continue
-            
-            race_results = [{'position': r['position'], 'jockey': r['jockey']} for r in race['results']]
-            if race_results:
-                tracker.update_race_result(race_num, race_results)
-                new_races += 1
-        
-        return JsonResponse({
-            'success': True,
-            'meeting': meeting,
-            'new_races_added': new_races,
-            **tracker.to_dict()
-        })
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
-
-
-@csrf_exempt
-def auto_fetch_standings(request, meeting_name):
-    """Auto-fetch standings from Ladbrokes"""
-    from .auto_results import auto_update_meeting
-    
-    meeting = meeting_name.upper()
-    
-    # Get jockeys from cache
-    jockeys = []
-    for m in CACHE.jockey_challenges:
-        if m['meeting'].upper() == meeting:
-            jockeys = [j['name'] for j in m.get('jockeys', [])]
-            break
-    
-    if not jockeys:
-        for m in CACHE.driver_challenges:
-            if m['meeting'].upper() == meeting:
-                jockeys = [d['name'] for d in m.get('drivers', [])]
-                break
-    
-    if not jockeys:
-        # Try POST body
-        if request.method == 'POST':
-            data = json.loads(request.body)
-            jockeys = data.get('jockeys', [])
-    
-    if not jockeys:
-        return JsonResponse({'success': False, 'error': f'{meeting} not found'}, status=404)
-    
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(auto_update_meeting(meeting_name, jockeys))
-        loop.close()
-        return JsonResponse(result)
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
