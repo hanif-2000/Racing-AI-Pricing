@@ -7,7 +7,7 @@ function Header({ onRefresh, loading, lastUpdated }) {
         <div className="logo-section">
           <span className="logo-icon">🏇</span>
           <div className="logo-text">
-            <h1>Racing AI Pricing</h1>
+            <h1>AI Racing Pricing</h1>
             <p>Jockey & Driver Challenge • AU & NZ</p>
           </div>
         </div>

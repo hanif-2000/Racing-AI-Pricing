@@ -1,46 +1,89 @@
+// src/components/HistoryTab.js - Fixed Status Calculation
 import React, { useState, useEffect } from 'react';
+import { API } from '../config';
 
 function HistoryTab() {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [bets, setBets] = useState(() => {
-    const saved = localStorage.getItem('racingBets');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [historyData, setHistoryData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [daysFilter, setDaysFilter] = useState(30);
 
-  // Get bets for selected date
-  const getDateBets = (date) => {
-    const dateStr = date.toLocaleDateString();
-    return bets.filter(b => b.date === dateStr);
+  useEffect(() => {
+    fetchHistory();
+  }, [daysFilter]);
+
+  const fetchHistory = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const res = await fetch(API.history(daysFilter));
+      const data = await res.json();
+      if (data.success) {
+        // Fix status based on date
+        const fixedHistory = (data.history || []).map(meeting => ({
+          ...meeting,
+          status: calculateStatus(meeting.date)
+        }));
+        setHistoryData(fixedHistory);
+      } else {
+        setError(data.error || 'Failed to load history');
+      }
+    } catch (err) {
+      console.error('History fetch error:', err);
+      setError('Failed to connect to server');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Get bets for a specific month
+  // 🔥 Calculate correct status based on date
+  const calculateStatus = (dateStr) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const meetingDate = new Date(dateStr);
+    meetingDate.setHours(0, 0, 0, 0);
+    
+    if (meetingDate < today) {
+      return 'completed';
+    } else if (meetingDate.getTime() === today.getTime()) {
+      return 'live';
+    } else {
+      return 'upcoming';
+    }
+  };
+
+  const getDateMeetings = (date) => {
+    const dateStr = date.toISOString().split('T')[0];
+    return historyData.filter(m => m.date === dateStr);
+  };
+
   const getMonthStats = () => {
-    const monthBets = bets.filter(b => {
-      const betDate = new Date(b.timestamp);
-      return betDate.getMonth() === currentMonth.getMonth() && 
-             betDate.getFullYear() === currentMonth.getFullYear();
+    const monthMeetings = historyData.filter(m => {
+      const meetDate = new Date(m.date);
+      return meetDate.getMonth() === currentMonth.getMonth() && 
+             meetDate.getFullYear() === currentMonth.getFullYear();
     });
     
-    const settled = monthBets.filter(b => b.result !== 'pending');
-    const staked = settled.reduce((sum, b) => sum + b.stake, 0);
-    const returns = monthBets.filter(b => b.result === 'win').reduce((sum, b) => sum + (b.stake * b.odds), 0);
-    const pnl = returns - staked;
-    const wins = monthBets.filter(b => b.result === 'win').length;
-    
-    return { total: monthBets.length, wins, pnl, staked };
+    return {
+      total: monthMeetings.length,
+      completed: monthMeetings.filter(m => m.status === 'completed').length,
+      auCount: monthMeetings.filter(m => m.country === 'AU').length,
+      nzCount: monthMeetings.filter(m => m.country === 'NZ').length
+    };
   };
 
-  // Calendar helpers
   const getDaysInMonth = (date) => {
     const year = date.getFullYear();
     const month = date.getMonth();
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
-    const daysInMonth = lastDay.getDate();
-    const startingDay = firstDay.getDay();
-    
-    return { daysInMonth, startingDay };
+    return { 
+      daysInMonth: lastDay.getDate(), 
+      startingDay: firstDay.getDay() 
+    };
   };
 
   const { daysInMonth, startingDay } = getDaysInMonth(currentMonth);
@@ -54,8 +97,7 @@ function HistoryTab() {
   };
 
   const selectDate = (day) => {
-    const newDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    setSelectedDate(newDate);
+    setSelectedDate(new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day));
   };
 
   const isToday = (day) => {
@@ -71,58 +113,112 @@ function HistoryTab() {
            currentMonth.getFullYear() === selectedDate.getFullYear();
   };
 
-  const hasBets = (day) => {
-    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    return getDateBets(date).length > 0;
+  const getDateString = (day) => {
+    const d = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+    return d.toISOString().split('T')[0];
   };
 
-  const getDayPnl = (day) => {
-    const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    const dayBets = getDateBets(date);
-    const settled = dayBets.filter(b => b.result !== 'pending');
-    const staked = settled.reduce((sum, b) => sum + b.stake, 0);
-    const returns = dayBets.filter(b => b.result === 'win').reduce((sum, b) => sum + (b.stake * b.odds), 0);
-    return returns - staked;
+  const hasMeetings = (day) => {
+    const dateStr = getDateString(day);
+    return historyData.some(m => m.date === dateStr);
+  };
+
+  const getDayStatus = (day) => {
+    const dateStr = getDateString(day);
+    const meetings = historyData.filter(m => m.date === dateStr);
+    if (meetings.length === 0) return 'none';
+    return meetings.every(m => m.status === 'completed') ? 'completed' : 'partial';
   };
 
   const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                       'July', 'August', 'September', 'October', 'November', 'December'];
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-  const selectedDateBets = getDateBets(selectedDate);
+  const selectedDateMeetings = getDateMeetings(selectedDate);
   const monthStats = getMonthStats();
 
-  // Calculate P&L for selected date bets
-  const calcBetPnl = (bet) => {
-    if (bet.result === 'win') return (bet.odds - 1) * bet.stake;
-    if (bet.result === 'loss') return -bet.stake;
-    return 0;
+  // Get type icon
+  const getTypeIcon = (type) => type === 'jockey' ? '🏇' : '🏎️';
+  
+  // Get country flag
+  const getCountryFlag = (country) => country === 'AU' ? '🇦🇺' : '🇳🇿';
+
+  // Get status style
+  const getStatusStyle = (status) => {
+    const styles = {
+      completed: {
+        background: 'rgba(34, 197, 94, 0.2)',
+        color: '#4ade80',
+        border: '1px solid rgba(34, 197, 94, 0.3)'
+      },
+      live: {
+        background: 'rgba(239, 68, 68, 0.2)',
+        color: '#f87171',
+        border: '1px solid rgba(239, 68, 68, 0.3)'
+      },
+      upcoming: {
+        background: 'rgba(59, 130, 246, 0.2)',
+        color: '#60a5fa',
+        border: '1px solid rgba(59, 130, 246, 0.3)'
+      }
+    };
+    return styles[status] || styles.upcoming;
   };
+
+  if (loading) {
+    return (
+      <div className="history-tab">
+        <div className="loading-spinner">Loading history...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="history-tab">
+        <div className="error-message">
+          <p>⚠️ {error}</p>
+          <button onClick={fetchHistory} className="retry-btn">Retry</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="history-tab">
-      {/* Month Stats */}
+      {/* Stats Bar */}
       <div className="month-stats-bar">
         <div className="month-stat">
-          <span className="stat-label">Month Bets</span>
+          <span className="stat-label">Month Meetings</span>
           <span className="stat-value">{monthStats.total}</span>
         </div>
         <div className="month-stat">
-          <span className="stat-label">Wins</span>
-          <span className="stat-value green">{monthStats.wins}</span>
+          <span className="stat-label">Completed</span>
+          <span className="stat-value green">{monthStats.completed}</span>
         </div>
         <div className="month-stat">
-          <span className="stat-label">Staked</span>
-          <span className="stat-value">${monthStats.staked.toFixed(0)}</span>
+          <span className="stat-label">🇦🇺 AU</span>
+          <span className="stat-value">{monthStats.auCount}</span>
         </div>
         <div className="month-stat">
-          <span className="stat-label">Month P&L</span>
-          <span className={`stat-value ${monthStats.pnl >= 0 ? 'green' : 'red'}`}>
-            {monthStats.pnl >= 0 ? '+' : ''}${monthStats.pnl.toFixed(2)}
-          </span>
+          <span className="stat-label">🇳🇿 NZ</span>
+          <span className="stat-value">{monthStats.nzCount}</span>
+        </div>
+        <div className="month-stat">
+          <select 
+            value={daysFilter} 
+            onChange={(e) => setDaysFilter(Number(e.target.value))}
+            className="days-filter"
+          >
+            <option value={7}>Last 7 days</option>
+            <option value={14}>Last 14 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+          </select>
         </div>
       </div>
 
+      {/* Main Content */}
       <div className="history-content">
         {/* Calendar */}
         <div className="calendar-container">
@@ -143,8 +239,7 @@ function HistoryTab() {
             
             {Array.from({ length: daysInMonth }).map((_, i) => {
               const day = i + 1;
-              const dayPnl = getDayPnl(day);
-              const hasBetsToday = hasBets(day);
+              const status = getDayStatus(day);
               
               return (
                 <div
@@ -153,89 +248,92 @@ function HistoryTab() {
                   className={`calendar-day 
                     ${isToday(day) ? 'today' : ''} 
                     ${isSelected(day) ? 'selected' : ''}
-                    ${hasBetsToday ? 'has-bets' : ''}
-                    ${hasBetsToday && dayPnl > 0 ? 'profit' : ''}
-                    ${hasBetsToday && dayPnl < 0 ? 'loss' : ''}
+                    ${hasMeetings(day) ? 'has-meetings' : ''}
+                    ${status === 'completed' ? 'completed' : ''}
                   `}
                 >
                   <span className="day-number">{day}</span>
-                  {hasBetsToday && (
-                    <span className="day-indicator">●</span>
-                  )}
+                  {hasMeetings(day) && <span className="meeting-dot"></span>}
                 </div>
               );
             })}
           </div>
-
-          <div className="calendar-legend">
-            <span className="legend-item"><span className="dot green"></span> Profit</span>
-            <span className="legend-item"><span className="dot red"></span> Loss</span>
-            <span className="legend-item"><span className="dot gray"></span> Pending</span>
-          </div>
         </div>
 
-        {/* Selected Date Details */}
-        <div className="date-details">
-          <div className="date-header">
-            <h3>📅 {selectedDate.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</h3>
-          </div>
-
-          {selectedDateBets.length > 0 ? (
-            <>
-              <div className="date-summary">
-                <div className="summary-item">
-                  <span>Total Bets</span>
-                  <span className="value">{selectedDateBets.length}</span>
-                </div>
-                <div className="summary-item">
-                  <span>Won</span>
-                  <span className="value green">{selectedDateBets.filter(b => b.result === 'win').length}</span>
-                </div>
-                <div className="summary-item">
-                  <span>Lost</span>
-                  <span className="value red">{selectedDateBets.filter(b => b.result === 'loss').length}</span>
-                </div>
-                <div className="summary-item">
-                  <span>P&L</span>
-                  <span className={`value ${selectedDateBets.reduce((sum, b) => sum + calcBetPnl(b), 0) >= 0 ? 'green' : 'red'}`}>
-                    {selectedDateBets.reduce((sum, b) => sum + calcBetPnl(b), 0) >= 0 ? '+' : ''}
-                    ${selectedDateBets.reduce((sum, b) => sum + calcBetPnl(b), 0).toFixed(2)}
+        {/* Selected Day Details */}
+        <div className="selected-day-details">
+          <h4>
+            {selectedDate.toLocaleDateString('en-AU', { 
+              weekday: 'long', 
+              day: 'numeric', 
+              month: 'long' 
+            })}
+            {isToday(selectedDate.getDate()) && 
+             currentMonth.getMonth() === new Date().getMonth() && 
+             currentMonth.getFullYear() === new Date().getFullYear() && (
+              <span style={{
+                marginLeft: '10px',
+                background: '#22c55e',
+                color: 'white',
+                padding: '4px 10px',
+                borderRadius: '6px',
+                fontSize: '0.75rem'
+              }}>Today</span>
+            )}
+          </h4>
+          
+          {selectedDateMeetings.length === 0 ? (
+            <p className="no-meetings">No meetings on this day</p>
+          ) : (
+            <div className="meetings-list">
+              {selectedDateMeetings.map((meeting, idx) => (
+                <div key={idx} className="meeting-item">
+                  <div className="meeting-info">
+                    {/* Type Icon */}
+                    <span style={{ fontSize: '1.3rem' }}>
+                      {getTypeIcon(meeting.type)}
+                    </span>
+                    
+                    {/* Meeting Name */}
+                    <span className="meeting-name">{meeting.name}</span>
+                    
+                    {/* Type Badge */}
+                    <span 
+                      style={{
+                        background: meeting.type === 'jockey' 
+                          ? 'rgba(34, 197, 94, 0.15)' 
+                          : 'rgba(168, 85, 247, 0.15)',
+                        color: meeting.type === 'jockey' ? '#4ade80' : '#c084fc',
+                        padding: '4px 10px',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        fontWeight: '600'
+                      }}
+                    >
+                      {meeting.type}
+                    </span>
+                    
+                    {/* Country Flag */}
+                    <span style={{ fontSize: '1.2rem' }}>
+                      {getCountryFlag(meeting.country)}
+                    </span>
+                  </div>
+                  
+                  {/* Status Badge */}
+                  <span 
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '20px',
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      textTransform: 'uppercase',
+                      ...getStatusStyle(meeting.status)
+                    }}
+                  >
+                    {meeting.status}
                   </span>
                 </div>
-              </div>
-
-              <div className="date-bets-list">
-                {selectedDateBets.map(bet => {
-                  const pnl = calcBetPnl(bet);
-                  return (
-                    <div key={bet.id} className={`date-bet-card ${bet.result}`}>
-                      <div className="bet-main">
-                        <span className="bet-type">{bet.type === 'jockey' ? '🏇' : '🏎️'}</span>
-                        <div className="bet-info">
-                          <span className="bet-name">{bet.jockey}</span>
-                          <span className="bet-meeting">{bet.meeting || 'No meeting'}</span>
-                        </div>
-                      </div>
-                      <div className="bet-details">
-                        <span className="bet-bookmaker">{bet.bookmaker}</span>
-                        <span className="bet-odds">${bet.odds.toFixed(2)}</span>
-                        <span className="bet-stake">${bet.stake.toFixed(2)}</span>
-                        <span className={`bet-result ${bet.result}`}>
-                          {bet.result === 'win' ? '✅' : bet.result === 'loss' ? '❌' : '⏳'}
-                        </span>
-                        <span className={`bet-pnl ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : ''}`}>
-                          {bet.result === 'pending' ? '—' : `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          ) : (
-            <div className="no-bets-day">
-              <span className="empty-icon">📭</span>
-              <p>No bets recorded for this day</p>
+              ))}
             </div>
           )}
         </div>

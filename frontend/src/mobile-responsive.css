@@ -1,0 +1,1085 @@
+/* =====================================================
+   📱 MOBILE RESPONSIVE - iPhone Optimized
+   Supports: iPhone SE (375px) to iPhone 15 Pro Max (430px)
+   ===================================================== */
+
+/* ===== GLOBAL MOBILE FIXES ===== */
+@media (max-width: 480px) {
+  
+  /* Base */
+  body {
+    font-size: 14px;
+    overflow-x: hidden;
+  }
+
+  .app {
+    overflow-x: hidden;
+  }
+
+  /* ===== HEADER ===== */
+  .header {
+    padding: 0;
+  }
+
+  .header-content {
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px 16px;
+  }
+
+  .logo-section {
+    gap: 10px;
+  }
+
+  .logo-icon {
+    font-size: 1.8rem;
+  }
+
+  .logo-text h1 {
+    font-size: 1.1rem;
+  }
+
+  .logo-text p {
+    font-size: 0.65rem;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .last-updated {
+    font-size: 0.65rem;
+  }
+
+  .refresh-btn {
+    padding: 10px 16px;
+    font-size: 13px;
+    border-radius: 10px;
+  }
+
+  /* ===== MAIN CONTENT ===== */
+  .main-content {
+    padding: 12px;
+  }
+
+  /* ===== TABS ===== */
+  .tabs-container {
+    margin-bottom: 12px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    min-width: max-content;
+  }
+
+  .tab {
+    padding: 10px 12px;
+    font-size: 12px;
+    border-radius: 10px;
+    white-space: nowrap;
+  }
+
+  .tab span {
+    font-size: 14px;
+  }
+
+  /* ===== FILTER BAR ===== */
+  .filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .filter-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 4px;
+    gap: 4px;
+  }
+
+  .filter-tab {
+    padding: 8px 12px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .value-indicator {
+    justify-content: center;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  /* ===== COUNTRY FILTER ===== */
+  .country-filter {
+    margin-bottom: 12px;
+  }
+
+  .filter-buttons {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 4px;
+    gap: 6px;
+  }
+
+  .filter-btn {
+    padding: 8px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .filter-btn .count {
+    padding: 2px 6px;
+    font-size: 10px;
+  }
+
+  /* ===== STATS ===== */
+  .stats-grid,
+  .stats-grid-5 {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .stat-card {
+    padding: 12px;
+    border-radius: 12px;
+    gap: 8px;
+  }
+
+  .stat-icon {
+    font-size: 1.5rem;
+  }
+
+  .stat-label {
+    font-size: 0.65rem;
+  }
+
+  .stat-value {
+    font-size: 1.1rem;
+  }
+
+  /* Stats Row (PricesTab) */
+  .stats-row {
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+  }
+
+  .stat-box {
+    padding: 8px 12px;
+    border-radius: 10px;
+    flex: 0 0 auto;
+  }
+
+  .stat-box .stat-icon {
+    font-size: 16px;
+  }
+
+  .stat-box .stat-num {
+    font-size: 16px;
+  }
+
+  .stat-box .stat-text {
+    font-size: 10px;
+  }
+
+  /* ===== PERIOD STATS ===== */
+  .period-stats {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .period-card {
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .period-card h4 {
+    font-size: 0.75rem;
+  }
+
+  .period-pnl {
+    font-size: 1.3rem;
+  }
+
+  .period-details {
+    font-size: 0.7rem;
+    gap: 8px;
+  }
+
+  /* ===== MEETING CARD ===== */
+  .meeting-card {
+    border-radius: 14px;
+    margin-bottom: 12px;
+  }
+
+  .meeting-header,
+  .meeting-header-comparison {
+    padding: 12px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .meeting-info,
+  .meeting-title-row {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .meeting-icon {
+    font-size: 1.2rem;
+  }
+
+  .meeting-info h3,
+  .meeting-title-row h3 {
+    font-size: 0.95rem;
+  }
+
+  .participant-count,
+  .participant-badge {
+    font-size: 10px;
+    padding: 3px 8px;
+  }
+
+  .source-badges {
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+
+  .source-badge,
+  .source-tag {
+    font-size: 9px;
+    padding: 3px 8px;
+    border-radius: 6px;
+  }
+
+  .country-tag {
+    font-size: 10px;
+    padding: 3px 8px;
+  }
+
+  /* ===== COMPARISON TABLE ===== */
+  .comparison-table-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 0 -12px;
+    padding: 0 12px;
+  }
+
+  .comparison-table {
+    min-width: 600px;
+    font-size: 11px;
+  }
+
+  .comparison-table th {
+    padding: 10px 8px;
+    font-size: 9px;
+  }
+
+  .comparison-table th.name-col {
+    min-width: 100px;
+    padding-left: 12px;
+  }
+
+  .comparison-table th.odds-col {
+    min-width: 55px;
+  }
+
+  .comparison-table th.best-col {
+    min-width: 65px;
+  }
+
+  .comparison-table th.ai-col {
+    min-width: 55px;
+  }
+
+  .comparison-table th.edge-col {
+    min-width: 50px;
+  }
+
+  .comparison-table th.value-col {
+    min-width: 60px;
+  }
+
+  .comparison-table td {
+    padding: 10px 8px;
+    font-size: 11px;
+  }
+
+  .comparison-table td.name-col {
+    padding-left: 12px;
+  }
+
+  .best-odds-display .best-value {
+    font-size: 12px;
+  }
+
+  .best-odds-display .best-source {
+    font-size: 8px;
+  }
+
+  .ai-price {
+    font-size: 12px !important;
+  }
+
+  .edge-badge {
+    padding: 3px 6px;
+    font-size: 10px;
+  }
+
+  .value-badge {
+    padding: 4px 8px;
+    font-size: 9px;
+  }
+
+  /* ===== MEETING TABLE (Standard) ===== */
+  .meeting-table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 0 -12px;
+    padding: 0 12px;
+  }
+
+  .meeting-table {
+    min-width: 550px;
+  }
+
+  .meeting-table th,
+  .meeting-table td {
+    padding: 10px 8px;
+    font-size: 11px;
+  }
+
+  .tab-odds,
+  .ai-price {
+    font-size: 12px !important;
+  }
+
+  .action-badge {
+    padding: 6px 10px;
+    font-size: 10px;
+  }
+
+  /* ===== BET TRACKER ===== */
+  .action-bar {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .action-right {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger {
+    padding: 12px 16px;
+    font-size: 13px;
+    border-radius: 10px;
+    text-align: center;
+  }
+
+  /* Add Bet Form */
+  .add-bet-form {
+    padding: 16px;
+    border-radius: 14px;
+  }
+
+  .add-bet-form h3 {
+    font-size: 1rem;
+    margin-bottom: 16px;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .form-group label {
+    font-size: 0.65rem;
+  }
+
+  .form-input {
+    padding: 10px 12px;
+    font-size: 14px;
+    border-radius: 8px;
+  }
+
+  .btn-add-bet {
+    padding: 14px;
+    font-size: 14px;
+    margin-top: 12px;
+  }
+
+  /* Filters Bar */
+  .filters-bar {
+    padding: 12px;
+    gap: 10px;
+    border-radius: 12px;
+  }
+
+  .filter-group {
+    flex: 1;
+    min-width: calc(50% - 5px);
+  }
+
+  .filter-group label {
+    font-size: 0.6rem;
+  }
+
+  .filter-group select {
+    padding: 8px 10px;
+    font-size: 12px;
+    border-radius: 8px;
+  }
+
+  .btn-clear-filters {
+    padding: 8px 12px;
+    font-size: 11px;
+  }
+
+  /* Bets List */
+  .bets-list {
+    border-radius: 14px;
+  }
+
+  .bets-header {
+    padding: 12px 16px;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .bets-header h3 {
+    font-size: 1rem;
+  }
+
+  .bets-summary {
+    gap: 12px;
+    font-size: 12px;
+  }
+
+  .bets-table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .bets-table {
+    min-width: 700px;
+  }
+
+  .bets-table th,
+  .bets-table td {
+    padding: 10px 8px;
+    font-size: 11px;
+  }
+
+  .type-badge {
+    width: 24px;
+    height: 24px;
+    font-size: 12px;
+  }
+
+  .bookmaker-badge {
+    padding: 4px 8px;
+    font-size: 10px;
+  }
+
+  .result-select {
+    padding: 6px 8px;
+    font-size: 11px;
+  }
+
+  /* ===== CALENDAR TAB ===== */
+  .week-strip {
+    gap: 8px;
+    padding: 8px 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .day-card {
+    padding: 12px 16px;
+    min-width: 60px;
+    border-radius: 12px;
+  }
+
+  .day-card .day-name {
+    font-size: 10px;
+  }
+
+  .day-card .day-number {
+    font-size: 18px;
+  }
+
+  .day-card .meeting-count {
+    font-size: 9px;
+    padding: 2px 6px;
+  }
+
+  .day-details {
+    padding: 16px;
+    border-radius: 14px;
+  }
+
+  .day-details h3 {
+    font-size: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .today-badge {
+    font-size: 10px;
+    padding: 3px 8px;
+  }
+
+  .meetings-grid {
+    gap: 10px;
+  }
+
+  .calendar-tab .meeting-card {
+    padding: 12px;
+    border-radius: 10px;
+  }
+
+  .calendar-tab .meeting-footer {
+    padding-top: 10px;
+  }
+
+  .calendar-tab .meeting-type {
+    font-size: 11px;
+  }
+
+  .status-badge,
+  .country-badge {
+    padding: 3px 8px;
+    font-size: 10px;
+  }
+
+  /* ===== HISTORY TAB ===== */
+  .month-stats-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px;
+    justify-content: center;
+  }
+
+  .month-stat {
+    flex: 0 0 auto;
+    min-width: 70px;
+  }
+
+  .month-stat .stat-label {
+    font-size: 0.65rem;
+  }
+
+  .month-stat .stat-value {
+    font-size: 1.2rem;
+  }
+
+  .days-filter {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  .history-content {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .calendar-container {
+    padding: 16px;
+    border-radius: 14px;
+    max-width: 100%;
+  }
+
+  .calendar-header {
+    margin-bottom: 16px;
+  }
+
+  .calendar-header h3 {
+    font-size: 1rem;
+  }
+
+  .cal-nav-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    font-size: 12px;
+  }
+
+  .calendar-grid {
+    gap: 3px;
+  }
+
+  .calendar-day-name {
+    font-size: 0.6rem;
+    padding: 4px 0;
+  }
+
+  .calendar-day {
+    border-radius: 8px;
+    font-size: 12px;
+  }
+
+  .calendar-legend {
+    gap: 12px;
+    font-size: 0.65rem;
+  }
+
+  .selected-day-details {
+    background: rgba(30, 41, 59, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    padding: 16px;
+  }
+
+  .selected-day-details h4 {
+    font-size: 1rem;
+    margin-bottom: 12px;
+  }
+
+  .meetings-list .meeting-item {
+    padding: 10px;
+    border-radius: 8px;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  /* ===== LIVE TRACKER ===== */
+  .live-tracker {
+    padding: 0;
+  }
+
+  .tracker-header {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .tracker-header h2 {
+    font-size: 1.2rem;
+  }
+
+  .auto-refresh-toggle {
+    font-size: 12px;
+  }
+
+  .meeting-selection {
+    padding: 16px;
+    border-radius: 14px;
+  }
+
+  .meeting-selection h3 {
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+
+  .live-tracker .meetings-list {
+    gap: 8px;
+  }
+
+  .live-tracker .meeting-item {
+    padding: 12px;
+    border-radius: 10px;
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .live-tracker .meeting-info {
+    gap: 8px;
+  }
+
+  .live-tracker .meeting-icon {
+    font-size: 16px;
+  }
+
+  .live-tracker .meeting-name {
+    font-size: 14px;
+  }
+
+  .live-tracker .meeting-actions {
+    width: 100%;
+    display: flex;
+    gap: 8px;
+  }
+
+  .track-btn,
+  .view-btn {
+    flex: 1;
+    padding: 10px 16px;
+    font-size: 12px;
+    border-radius: 8px;
+  }
+
+  .delete-btn {
+    padding: 10px 14px;
+    font-size: 12px;
+  }
+
+  /* Tracker Display */
+  .tracker-display {
+    padding: 16px;
+    border-radius: 14px;
+    margin-top: 16px;
+  }
+
+  .tracker-info h3 {
+    font-size: 1.1rem;
+  }
+
+  .race-progress {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .race-progress span {
+    font-size: 12px;
+  }
+
+  .progress-bar {
+    width: 100%;
+  }
+
+  /* Margin Slider */
+  .margin-slider {
+    padding: 14px;
+    border-radius: 10px;
+  }
+
+  .margin-header label {
+    font-size: 12px;
+  }
+
+  .margin-value {
+    font-size: 18px;
+  }
+
+  .slider-labels {
+    font-size: 10px;
+  }
+
+  .margin-hint {
+    font-size: 11px;
+  }
+
+  /* Leaderboard */
+  .leaderboard {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 0 -16px;
+    padding: 0 16px;
+  }
+
+  .leaderboard table {
+    min-width: 500px;
+  }
+
+  .leaderboard th {
+    padding: 10px 8px;
+    font-size: 10px;
+  }
+
+  .leaderboard td {
+    padding: 10px 8px;
+    font-size: 11px;
+  }
+
+  .leaderboard .value.yes {
+    padding: 3px 8px;
+    font-size: 10px;
+  }
+
+  .manual-refresh-btn {
+    padding: 12px;
+    font-size: 13px;
+    border-radius: 10px;
+  }
+
+  /* Race History */
+  .race-history h4 {
+    font-size: 14px;
+    margin-bottom: 10px;
+  }
+
+  .race-result {
+    padding: 10px;
+    font-size: 12px;
+  }
+
+  .race-num {
+    font-size: 11px;
+  }
+
+  .placing {
+    font-size: 11px;
+  }
+
+  /* ===== EMPTY/ERROR STATES ===== */
+  .empty-state,
+  .error-state {
+    padding: 40px 20px;
+  }
+
+  .empty-icon,
+  .error-icon {
+    font-size: 3rem;
+  }
+
+  .empty-state h3,
+  .error-state h3 {
+    font-size: 1.1rem;
+  }
+
+  .empty-state p,
+  .error-state p {
+    font-size: 13px;
+  }
+
+  .btn-retry {
+    padding: 12px 24px;
+    font-size: 14px;
+  }
+
+  /* ===== FOOTER ===== */
+  .footer {
+    padding: 16px;
+  }
+
+  .footer p {
+    font-size: 11px;
+  }
+
+  /* ===== REFRESHING BANNER ===== */
+  .refreshing-banner {
+    font-size: 12px;
+    padding: 8px 12px;
+  }
+
+  /* ===== SECTION TITLE ===== */
+  .section-title {
+    font-size: 16px;
+    margin: 20px 0 12px 0;
+  }
+
+  /* ===== PRICES FOOTER ===== */
+  .prices-footer {
+    font-size: 11px;
+    padding: 16px;
+  }
+
+  .cache-tag {
+    font-size: 9px;
+    padding: 3px 8px;
+  }
+
+  /* ===== SHIMMER LOADING ===== */
+  .shimmer-stats {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .shimmer-stat-card {
+    padding: 12px;
+  }
+
+  .shimmer-icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  /* ===== SCROLLBAR HIDE FOR MOBILE ===== */
+  .tabs::-webkit-scrollbar,
+  .filter-tabs::-webkit-scrollbar,
+  .filter-buttons::-webkit-scrollbar,
+  .week-strip::-webkit-scrollbar,
+  .comparison-table-container::-webkit-scrollbar,
+  .meeting-table-wrapper::-webkit-scrollbar,
+  .bets-table-wrapper::-webkit-scrollbar,
+  .leaderboard::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tabs,
+  .filter-tabs,
+  .filter-buttons,
+  .week-strip,
+  .comparison-table-container,
+  .meeting-table-wrapper,
+  .bets-table-wrapper,
+  .leaderboard {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* ===== EXTRA SMALL SCREENS (iPhone SE, etc.) ===== */
+@media (max-width: 375px) {
+  
+  .header-content {
+    padding: 10px 12px;
+  }
+
+  .logo-text h1 {
+    font-size: 1rem;
+  }
+
+  .main-content {
+    padding: 10px;
+  }
+
+  .tab {
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+
+  .stats-grid,
+  .stats-grid-5,
+  .period-stats {
+    gap: 6px;
+  }
+
+  .stat-card,
+  .period-card {
+    padding: 10px;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .action-right {
+    grid-template-columns: 1fr;
+  }
+
+  .meeting-header,
+  .meeting-header-comparison {
+    padding: 10px;
+  }
+
+  .comparison-table {
+    min-width: 500px;
+    font-size: 10px;
+  }
+
+  .comparison-table th,
+  .comparison-table td {
+    padding: 8px 6px;
+  }
+
+  .day-card {
+    padding: 10px 12px;
+    min-width: 50px;
+  }
+
+  .day-card .day-number {
+    font-size: 16px;
+  }
+}
+
+/* ===== LANDSCAPE MODE FIX ===== */
+@media (max-width: 812px) and (orientation: landscape) {
+  
+  .header-content {
+    flex-direction: row;
+    padding: 8px 16px;
+  }
+
+  .stats-grid,
+  .stats-grid-5 {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .period-stats {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .form-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* ===== TOUCH IMPROVEMENTS ===== */
+@media (hover: none) and (pointer: coarse) {
+  
+  /* Larger touch targets */
+  .tab,
+  .filter-tab,
+  .filter-btn,
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .track-btn,
+  .view-btn,
+  .delete-btn,
+  .cal-nav-btn,
+  .day-card,
+  .calendar-day {
+    min-height: 44px;
+  }
+
+  /* Remove hover effects that don't work well on touch */
+  .tab:hover,
+  .filter-tab:hover,
+  .filter-btn:hover,
+  .meeting-header:hover,
+  .live-tracker .meeting-item:hover,
+  .day-card:hover,
+  .calendar-day:hover,
+  .comparison-table tr:hover {
+    background: inherit;
+  }
+
+  /* Active states for touch */
+  .tab:active,
+  .filter-tab:active,
+  .filter-btn:active {
+    transform: scale(0.98);
+  }
+
+  .btn-primary:active,
+  .btn-secondary:active,
+  .track-btn:active,
+  .view-btn:active {
+    transform: scale(0.97);
+  }
+}
+
+/* ===== SAFE AREA (iPhone X and newer) ===== */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  
+  .footer {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .main-content {
+    padding-left: calc(12px + env(safe-area-inset-left));
+    padding-right: calc(12px + env(safe-area-inset-right));
+  }
+}
+
+/* ===== DARK MODE IMPROVEMENTS ===== */
+@media (prefers-color-scheme: dark) {
+  
+  .form-input {
+    background: rgba(15, 23, 42, 0.8);
+  }
+
+  .filter-group select {
+    background: rgba(15, 23, 42, 0.8);
+  }
+}

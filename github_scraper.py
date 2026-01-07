@@ -1,70 +1,24 @@
-"""
-🏇 RACING SCRAPER - PRODUCTION VERSION
-- Parallel scraping (20-30 sec instead of 2-3 min)
-- Smart caching with TTL
-- Proper error handling
-- Logging
-"""
+# github_scraper.py
+# GitHub Actions Scraper - Sends data to cPanel API
+# Place this in root of your repo
 
 import asyncio
+import aiohttp
 import re
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from playwright.async_api import async_playwright
-from typing import List, Dict, Optional
+from typing import List, Dict
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
-)
+# =====================================================
+# CONFIG
+# =====================================================
+
+API_URL = 'https://api.jockeydriverchallenge.com/api/receive-scrape/'
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
-
-# =====================================================
-# CACHE
-# =====================================================
-
-class RacingCache:
-    def __init__(self, ttl_minutes: int = 5):
-        self.jockey_challenges: List[Dict] = []
-        self.driver_challenges: List[Dict] = []
-        self.last_updated: Optional[datetime] = None
-        self.is_scraping: bool = False
-        self.ttl = timedelta(minutes=ttl_minutes)
-    
-    def is_stale(self) -> bool:
-        if not self.last_updated:
-            return True
-        return datetime.now() - self.last_updated > self.ttl
-    
-    def has_data(self) -> bool:
-        return len(self.jockey_challenges) > 0 or len(self.driver_challenges) > 0
-    
-    def update(self, jockey: List[Dict], driver: List[Dict]):
-        self.jockey_challenges = jockey
-        self.driver_challenges = driver
-        self.last_updated = datetime.now()
-    
-    def get_data(self) -> Dict:
-        return {
-            'jockey_challenges': self.jockey_challenges,
-            'driver_challenges': self.driver_challenges,
-            'last_updated': self.last_updated.isoformat() if self.last_updated else None,
-            'from_cache': True
-        }
-
-CACHE = RacingCache(ttl_minutes=5)
-
-def get_cached_data():
-    return CACHE.get_data()
-
-def has_cached_data():
-    return CACHE.has_data()
-
-def is_cache_stale():
-    return CACHE.is_stale()
 
 # =====================================================
 # COUNTRY DETECTION
@@ -96,8 +50,6 @@ class BaseScraper:
     def __init__(self):
         self.name = "Base"
         self.timeout = 30000
-        self.wait_short = 1.5
-        self.wait_medium = 2.5
     
     async def get_browser(self):
         playwright = await async_playwright().start()
@@ -118,9 +70,8 @@ class BaseScraper:
         text = await page.evaluate('document.body.innerText')
         return [l.strip() for l in text.split('\n') if l.strip()]
     
-    def log(self, msg: str, level: str = "info"):
-        full = f"[{self.name}] {msg}"
-        getattr(logger, level)(full)
+    def log(self, msg: str):
+        logger.info(f"[{self.name}] {msg}")
 
 # =====================================================
 # TABTOUCH SCRAPER
@@ -131,7 +82,7 @@ class TABtouchScraper(BaseScraper):
         super().__init__()
         self.name = "TABtouch"
     
-    async def get_all_jockey_data(self) -> List[Dict]:
+    async def scrape(self) -> List[Dict]:
         meetings = []
         playwright = browser = context = None
         try:
@@ -139,7 +90,7 @@ class TABtouchScraper(BaseScraper):
             page = await context.new_page()
             self.log("Starting...")
             await page.goto('https://www.tabtouch.com.au/racing/jockey-challenge', timeout=self.timeout)
-            await asyncio.sleep(self.wait_medium)
+            await asyncio.sleep(3)
             
             for _ in range(3):
                 await page.evaluate('window.scrollBy(0, 500)')
@@ -151,15 +102,12 @@ class TABtouchScraper(BaseScraper):
             found = list(dict.fromkeys([m.strip() for m in found]))
             self.log(f"Found {len(found)} meetings")
             
-            for meeting in found:
+            for meeting in found[:8]:
                 try:
                     await page.goto('https://www.tabtouch.com.au/racing/jockey-challenge', timeout=self.timeout)
-                    await asyncio.sleep(self.wait_short)
-                    for _ in range(3):
-                        await page.evaluate('window.scrollBy(0, 400)')
-                        await asyncio.sleep(0.2)
+                    await asyncio.sleep(2)
                     await page.click(f'text="{meeting} Jockey Challenge 3,2,1 Points"', timeout=5000)
-                    await asyncio.sleep(self.wait_medium)
+                    await asyncio.sleep(2)
                     lines = await self.get_text_lines(page)
                     jockeys = self._parse(lines)
                     if jockeys:
@@ -169,9 +117,9 @@ class TABtouchScraper(BaseScraper):
                         })
                         self.log(f"✅ {meeting}: {len(jockeys)}")
                 except Exception as e:
-                    self.log(f"⚠️ {meeting}: {str(e)[:30]}", "warning")
+                    self.log(f"⚠️ {meeting}: {str(e)[:30]}")
         except Exception as e:
-            self.log(f"❌ {str(e)[:50]}", "error")
+            self.log(f"❌ {str(e)[:50]}")
         finally:
             if browser: await browser.close()
             if playwright: await playwright.stop()
@@ -212,7 +160,7 @@ class LadbrokesScraper(BaseScraper):
         super().__init__()
         self.name = "Ladbrokes"
     
-    async def get_all_jockey_data(self) -> List[Dict]:
+    async def scrape_jockey(self) -> List[Dict]:
         meetings = []
         playwright = browser = context = None
         try:
@@ -220,22 +168,22 @@ class LadbrokesScraper(BaseScraper):
             page = await context.new_page()
             self.log("Starting jockey...")
             await page.goto('https://www.ladbrokes.com.au/racing/extras', timeout=60000)
-            await asyncio.sleep(self.wait_medium)
+            await asyncio.sleep(3)
             lines = await self.get_text_lines(page)
             horse_meetings = self._find_section(lines, 'Horse Racing', 'Greyhounds')
             self.log(f"Found {len(horse_meetings)} horse meetings")
             
-            for meeting in horse_meetings:
+            for meeting in horse_meetings[:8]:
                 try:
                     await page.goto('https://www.ladbrokes.com.au/racing/extras', timeout=60000)
-                    await asyncio.sleep(self.wait_short)
+                    await asyncio.sleep(2)
                     await page.click(f'text="{meeting}"', timeout=3000)
-                    await asyncio.sleep(self.wait_short)
+                    await asyncio.sleep(2)
                     text = await page.evaluate('document.body.innerText')
                     jc = f'Jockey Challenge - {meeting}'
                     if jc in text:
                         await page.click(f'text="{jc}"', timeout=3000)
-                        await asyncio.sleep(self.wait_medium)
+                        await asyncio.sleep(2)
                         lines = await self.get_text_lines(page)
                         jockeys = self._parse_odds(lines)
                         if jockeys:
@@ -245,15 +193,15 @@ class LadbrokesScraper(BaseScraper):
                             })
                             self.log(f"✅ {meeting}: {len(jockeys)}")
                 except Exception as e:
-                    self.log(f"⚠️ {meeting}: {str(e)[:30]}", "warning")
+                    self.log(f"⚠️ {meeting}: {str(e)[:30]}")
         except Exception as e:
-            self.log(f"❌ {str(e)[:50]}", "error")
+            self.log(f"❌ {str(e)[:50]}")
         finally:
             if browser: await browser.close()
             if playwright: await playwright.stop()
         return meetings
     
-    async def get_all_driver_data(self) -> List[Dict]:
+    async def scrape_driver(self) -> List[Dict]:
         meetings = []
         playwright = browser = context = None
         try:
@@ -261,24 +209,24 @@ class LadbrokesScraper(BaseScraper):
             page = await context.new_page()
             self.log("Starting driver...")
             await page.goto('https://www.ladbrokes.com.au/racing/extras', timeout=60000)
-            await asyncio.sleep(self.wait_medium)
+            await asyncio.sleep(3)
             lines = await self.get_text_lines(page)
             harness = self._find_harness(lines)
             self.log(f"Found {len(harness)} harness meetings")
             
-            for meeting in harness:
+            for meeting in harness[:5]:
                 try:
                     await page.goto('https://www.ladbrokes.com.au/racing/extras', timeout=60000)
-                    await asyncio.sleep(self.wait_short)
+                    await asyncio.sleep(2)
                     await page.click(f'text="{meeting}"', timeout=3000)
-                    await asyncio.sleep(self.wait_short)
+                    await asyncio.sleep(2)
                     text = await page.evaluate('document.body.innerText')
                     dc = f'Driver Challenge - {meeting}'
                     if dc in text:
                         await page.click(f'text="{dc}"', timeout=3000)
-                        await asyncio.sleep(self.wait_medium)
+                        await asyncio.sleep(2)
                         lines = await self.get_text_lines(page)
-                        drivers = self._parse_odds(lines, True)
+                        drivers = self._parse_odds(lines)
                         if drivers:
                             meetings.append({
                                 'meeting': meeting.upper(), 'type': 'driver',
@@ -286,9 +234,9 @@ class LadbrokesScraper(BaseScraper):
                             })
                             self.log(f"✅ {meeting} driver: {len(drivers)}")
                 except Exception as e:
-                    self.log(f"⚠️ {meeting}: {str(e)[:30]}", "warning")
+                    self.log(f"⚠️ {meeting}: {str(e)[:30]}")
         except Exception as e:
-            self.log(f"❌ {str(e)[:50]}", "error")
+            self.log(f"❌ {str(e)[:50]}")
         finally:
             if browser: await browser.close()
             if playwright: await playwright.stop()
@@ -319,7 +267,7 @@ class LadbrokesScraper(BaseScraper):
                 if '24/7' in lines[i] or 'Responsible' in lines[i]: break
         return result
     
-    def _parse_odds(self, lines, is_driver=False):
+    def _parse_odds(self, lines):
         result = []
         skip = ['Challenge', 'keyboard', 'Same Meeting', 'Most Points', 'Winner', 'arrow']
         for i, l in enumerate(lines):
@@ -334,198 +282,6 @@ class LadbrokesScraper(BaseScraper):
         return result
 
 # =====================================================
-# TAB SCRAPER
-# =====================================================
-
-class TABScraper(BaseScraper):
-    def __init__(self):
-        super().__init__()
-        self.name = "TAB"
-    
-    async def get_all_jockey_data(self) -> List[Dict]:
-        meetings = []
-        playwright = browser = None
-        try:
-            playwright = await async_playwright().start()
-            user_dir = '/tmp/tab_profile'
-            os.makedirs(user_dir, exist_ok=True)
-            browser = await playwright.chromium.launch_persistent_context(
-                user_dir, headless=False,
-                args=['--disable-blink-features=AutomationControlled'],
-                viewport={'width': 1920, 'height': 1080}, locale='en-AU', timezone_id='Australia/Sydney'
-            )
-            page = browser.pages[0] if browser.pages else await browser.new_page()
-            self.log("Starting...")
-            await page.goto("https://www.tab.com.au/sports/betting/Jockey%20Challenge/competitions/Jockey%20Challenge",
-                          wait_until='domcontentloaded', timeout=60000)
-            await asyncio.sleep(6)
-            content = await page.content()
-            if 'Access Denied' in content:
-                self.log("❌ Access Denied", "error")
-                return []
-            for _ in range(3):
-                await page.evaluate('window.scrollBy(0, 500)')
-                await asyncio.sleep(0.3)
-            text = await page.evaluate('document.body.innerText')
-            if 'JOCK MstPts' not in text:
-                self.log("❌ No content", "error")
-                return []
-            meetings = self._parse(text)
-            self.log(f"✅ {len(meetings)} meetings")
-        except Exception as e:
-            self.log(f"❌ {str(e)[:50]}", "error")
-        finally:
-            if browser: await browser.close()
-            if playwright: await playwright.stop()
-        return meetings
-    
-    def _parse(self, text: str) -> List[Dict]:
-        meetings = []
-        current = None
-        jockeys = []
-        prev = None
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line: continue
-            if line.startswith('JOCK MstPts '):
-                rem = line.replace('JOCK MstPts ', '')
-                if rem.isupper() and not any(c.isdigit() for c in rem):
-                    if current and jockeys:
-                        meetings.append({'meeting': current, 'type': 'jockey', 'jockeys': jockeys.copy(),
-                                        'source': 'tab', 'country': get_country(current)})
-                    current, jockeys, prev = rem, [], None
-                    continue
-            skip = ['Market', 'SUSP', 'Any Other', 'Bet Slip', 'MENU', 'AUDIO', 'Jockey Challenge', 'JOCK MstPts']
-            if any(x.lower() in line.lower() for x in skip):
-                prev = None
-                continue
-            try:
-                odds = float(line)
-                if 1.01 < odds < 500 and prev:
-                    jockeys.append({'name': prev, 'odds': odds})
-                prev = None
-            except ValueError:
-                if current and len(line) > 2 and line[0].isupper() and not line.isupper():
-                    if not any(c.isdigit() for c in line):
-                        prev = line
-        if current and jockeys:
-            meetings.append({'meeting': current, 'type': 'jockey', 'jockeys': jockeys,
-                            'source': 'tab', 'country': get_country(current)})
-        return meetings
-
-# =====================================================
-# SPORTSBET SCRAPER
-# =====================================================
-
-class SportsbetScraper(BaseScraper):
-    def __init__(self):
-        super().__init__()
-        self.name = "Sportsbet"
-    
-    async def get_all_jockey_data(self) -> List[Dict]:
-        meetings = []
-        playwright = browser = context = None
-        try:
-            playwright, browser, context = await self.get_browser()
-            page = await context.new_page()
-            self.log("Starting jockey...")
-            await page.goto('https://www.sportsbet.com.au/horse-racing', timeout=self.timeout)
-            await asyncio.sleep(self.wait_short)
-            try:
-                await page.click('text="Extras"', timeout=5000)
-                await asyncio.sleep(self.wait_short)
-            except: pass
-            for _ in range(3):
-                await page.evaluate('window.scrollBy(0, 500)')
-                await asyncio.sleep(0.2)
-            text = await page.evaluate('document.body.innerText')
-            found = re.findall(r'Jockey Challenge - ([A-Za-z ]+)', text)
-            found = list(dict.fromkeys([m.strip() for m in found]))
-            self.log(f"Found {len(found)} meetings")
-            for meeting in found[:10]:
-                try:
-                    await page.click(f'text="Jockey Challenge - {meeting}"', timeout=3000)
-                    await asyncio.sleep(self.wait_short)
-                    lines = await self.get_text_lines(page)
-                    jockeys = self._parse(lines)
-                    if jockeys:
-                        meetings.append({'meeting': meeting.upper(), 'type': 'jockey',
-                                        'jockeys': jockeys, 'source': 'sportsbet', 'country': get_country(meeting)})
-                        self.log(f"✅ {meeting}: {len(jockeys)}")
-                    await page.goto('https://www.sportsbet.com.au/horse-racing')
-                    await asyncio.sleep(0.5)
-                    try:
-                        await page.click('text="Extras"', timeout=3000)
-                        await asyncio.sleep(0.5)
-                    except: pass
-                except Exception as e:
-                    self.log(f"⚠️ {meeting}: {str(e)[:30]}", "warning")
-        except Exception as e:
-            self.log(f"❌ {str(e)[:50]}", "error")
-        finally:
-            if browser: await browser.close()
-            if playwright: await playwright.stop()
-        return meetings
-    
-    async def get_all_driver_data(self) -> List[Dict]:
-        meetings = []
-        playwright = browser = context = None
-        try:
-            playwright, browser, context = await self.get_browser()
-            page = await context.new_page()
-            self.log("Starting driver...")
-            await page.goto('https://www.sportsbet.com.au/horse-racing', timeout=self.timeout)
-            await asyncio.sleep(self.wait_short)
-            try:
-                await page.click('text="Extras"', timeout=5000)
-                await asyncio.sleep(self.wait_short)
-            except: pass
-            for _ in range(5):
-                await page.evaluate('window.scrollBy(0, 500)')
-                await asyncio.sleep(0.2)
-            text = await page.evaluate('document.body.innerText')
-            found = re.findall(r'([A-Za-z ]+) Driver Challenge', text)
-            found = [m.strip() for m in found if 'Harness' not in m]
-            found = list(dict.fromkeys(found))
-            self.log(f"Found {len(found)} driver meetings")
-            for meeting in found[:10]:
-                try:
-                    await page.click(f'text="{meeting} Driver Challenge"', timeout=3000)
-                    await asyncio.sleep(self.wait_short)
-                    lines = await self.get_text_lines(page)
-                    drivers = self._parse(lines, True)
-                    if drivers:
-                        meetings.append({'meeting': meeting.upper(), 'type': 'driver',
-                                        'drivers': drivers, 'source': 'sportsbet', 'country': get_country(meeting)})
-                        self.log(f"✅ {meeting} driver: {len(drivers)}")
-                except: pass
-        except Exception as e:
-            self.log(f"❌ {str(e)[:50]}", "error")
-        finally:
-            if browser: await browser.close()
-            if playwright: await playwright.stop()
-        return meetings
-    
-    def _parse(self, lines, is_driver=False):
-        result = []
-        for i, l in enumerate(lines):
-            try:
-                odds = float(l)
-                if 1.01 < odds < 500:
-                    for off in [1, 2, 3]:
-                        if i >= off:
-                            name = lines[i - off]
-                            if name and ' ' in name and len(name) > 4:
-                                if not any(c.isdigit() for c in name):
-                                    skip = ['Challenge', 'Any Other', 'Back', 'Lay', 'Extras']
-                                    if not any(s in name for s in skip):
-                                        if not any(p['name'] == name for p in result):
-                                            result.append({'name': name, 'odds': odds})
-                                            break
-            except: pass
-        return result
-
-# =====================================================
 # ELITEBET SCRAPER
 # =====================================================
 
@@ -534,7 +290,7 @@ class ElitebetScraper(BaseScraper):
         super().__init__()
         self.name = "Elitebet"
     
-    async def get_all_jockey_data(self) -> List[Dict]:
+    async def scrape(self) -> List[Dict]:
         meetings = []
         playwright = browser = context = None
         try:
@@ -542,22 +298,22 @@ class ElitebetScraper(BaseScraper):
             page = await context.new_page()
             self.log("Starting...")
             await page.goto('https://www.elitebet.com.au/racing', timeout=self.timeout)
-            await asyncio.sleep(self.wait_medium)
+            await asyncio.sleep(3)
             jt = page.locator('text=Jockey Challenge')
             if await jt.count() > 0:
                 await jt.click()
-                await asyncio.sleep(self.wait_medium)
+                await asyncio.sleep(3)
             else:
                 return []
             lines = await self.get_text_lines(page)
             names = self._find_meetings(lines)
             self.log(f"Found {len(names)} meetings")
-            for name in names:
+            for name in names[:5]:
                 try:
                     elem = page.locator(f'text={name}').first
                     if await elem.count() > 0:
                         await elem.click()
-                        await asyncio.sleep(self.wait_short)
+                        await asyncio.sleep(2)
                         lines = await self.get_text_lines(page)
                         jockeys = self._parse(lines, name)
                         if jockeys:
@@ -565,9 +321,9 @@ class ElitebetScraper(BaseScraper):
                                             'jockeys': jockeys, 'source': 'elitebet', 'country': get_country(name)})
                             self.log(f"✅ {name}: {len(jockeys)}")
                 except Exception as e:
-                    self.log(f"⚠️ {name}: {e}", "warning")
+                    self.log(f"⚠️ {name}: {e}")
         except Exception as e:
-            self.log(f"❌ {e}", "error")
+            self.log(f"❌ {e}")
         finally:
             if browser: await browser.close()
             if playwright: await playwright.stop()
@@ -576,8 +332,7 @@ class ElitebetScraper(BaseScraper):
     def _find_meetings(self, lines):
         names = []
         dp = re.compile(r'^\d{2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2}$')
-        skip = ['Racing', 'Jockey Challenge', 'Results', 'Today', 'Tomorrow', 'Futures',
-                'Join', 'Log In', 'Home', 'Sports', 'HOT Bets', 'Promotions', 'Help', 'Horses', 'Greys', 'Harness']
+        skip = ['Racing', 'Jockey Challenge', 'Results', 'Today', 'Tomorrow', 'Futures']
         for i, l in enumerate(lines):
             if dp.match(l) and i > 0:
                 prev = lines[i - 1]
@@ -609,7 +364,7 @@ class PointsBetScraper(BaseScraper):
         super().__init__()
         self.name = "PointsBet"
     
-    async def get_all_jockey_data(self) -> List[Dict]:
+    async def scrape_jockey(self) -> List[Dict]:
         meetings = []
         playwright = browser = context = None
         try:
@@ -617,7 +372,7 @@ class PointsBetScraper(BaseScraper):
             page = await context.new_page()
             self.log("Starting jockey...")
             await page.goto('https://pointsbet.com.au/racing?search=specials', timeout=60000)
-            await asyncio.sleep(self.wait_medium)
+            await asyncio.sleep(3)
             text = await page.evaluate('document.body.innerText')
             names = []
             for l in text.split('\n'):
@@ -627,12 +382,12 @@ class PointsBetScraper(BaseScraper):
                         n = m.group(1).strip()
                         if n and n not in names: names.append(n)
             self.log(f"Found {len(names)} meetings")
-            for name in names[:10]:
+            for name in names[:5]:
                 try:
                     await page.goto('https://pointsbet.com.au/racing?search=specials', timeout=60000)
-                    await asyncio.sleep(self.wait_short)
+                    await asyncio.sleep(2)
                     await page.click(f'text={name} - Thoroughbred Specials', timeout=5000)
-                    await asyncio.sleep(self.wait_short)
+                    await asyncio.sleep(2)
                     lines = await self.get_text_lines(page)
                     jockeys = self._parse(lines, 'Jockey Challenge')
                     if jockeys:
@@ -640,15 +395,15 @@ class PointsBetScraper(BaseScraper):
                                         'jockeys': jockeys, 'source': 'pointsbet', 'country': get_country(name)})
                         self.log(f"✅ {name}: {len(jockeys)}")
                 except Exception as e:
-                    self.log(f"⚠️ {name}: {str(e)[:30]}", "warning")
+                    self.log(f"⚠️ {name}: {str(e)[:30]}")
         except Exception as e:
-            self.log(f"❌ {str(e)[:50]}", "error")
+            self.log(f"❌ {str(e)[:50]}")
         finally:
             if browser: await browser.close()
             if playwright: await playwright.stop()
         return meetings
     
-    async def get_all_driver_data(self) -> List[Dict]:
+    async def scrape_driver(self) -> List[Dict]:
         meetings = []
         playwright = browser = context = None
         try:
@@ -656,7 +411,7 @@ class PointsBetScraper(BaseScraper):
             page = await context.new_page()
             self.log("Starting driver...")
             await page.goto('https://pointsbet.com.au/racing?search=specials', timeout=60000)
-            await asyncio.sleep(self.wait_medium)
+            await asyncio.sleep(3)
             text = await page.evaluate('document.body.innerText')
             names = []
             for l in text.split('\n'):
@@ -666,12 +421,12 @@ class PointsBetScraper(BaseScraper):
                         n = m.group(1).strip()
                         if n and n not in names: names.append(n)
             self.log(f"Found {len(names)} driver meetings")
-            for name in names[:10]:
+            for name in names[:5]:
                 try:
                     await page.goto('https://pointsbet.com.au/racing?search=specials', timeout=60000)
-                    await asyncio.sleep(self.wait_short)
+                    await asyncio.sleep(2)
                     await page.click(f'text={name} - Harness Specials', timeout=5000)
-                    await asyncio.sleep(self.wait_short)
+                    await asyncio.sleep(2)
                     lines = await self.get_text_lines(page)
                     drivers = self._parse(lines, 'Driver Challenge')
                     if drivers:
@@ -679,9 +434,9 @@ class PointsBetScraper(BaseScraper):
                                         'drivers': drivers, 'source': 'pointsbet', 'country': get_country(name)})
                         self.log(f"✅ {name} driver: {len(drivers)}")
                 except Exception as e:
-                    self.log(f"⚠️ {name}: {str(e)[:30]}", "warning")
+                    self.log(f"⚠️ {name}: {str(e)[:30]}")
         except Exception as e:
-            self.log(f"❌ {str(e)[:50]}", "error")
+            self.log(f"❌ {str(e)[:50]}")
         finally:
             if browser: await browser.close()
             if playwright: await playwright.stop()
@@ -704,71 +459,91 @@ class PointsBetScraper(BaseScraper):
         return result
 
 # =====================================================
-# 🚀 PARALLEL FETCH - MAIN FUNCTION
+# MAIN FUNCTIONS
 # =====================================================
 
-async def fetch_all_data():
-    """Run all scrapers in PARALLEL - 20-30 sec instead of 2-3 min"""
-    global CACHE
-    
-    if CACHE.is_scraping:
-        logger.info("⏳ Already scraping...")
-        return CACHE.get_data()
-    
-    CACHE.is_scraping = True
-    logger.info("🚀 Starting PARALLEL scrape...")
+async def run_all_scrapers():
+    """Run scrapers in parallel"""
+    logger.info(f"\n🏇 Starting GitHub Actions Scraper at {datetime.now()}")
     start = datetime.now()
     
-    try:
-        results = await asyncio.gather(
-            TABScraper().get_all_jockey_data(),
-            ElitebetScraper().get_all_jockey_data(),
-            SportsbetScraper().get_all_jockey_data(),
-            SportsbetScraper().get_all_driver_data(),
-            TABtouchScraper().get_all_jockey_data(),
-            LadbrokesScraper().get_all_jockey_data(),
-            LadbrokesScraper().get_all_driver_data(),
-            PointsBetScraper().get_all_jockey_data(),
-            PointsBetScraper().get_all_driver_data(),
-            return_exceptions=True
-        )
-        
-        jockey, driver = [], []
-        driver_idx = {3, 6, 8}
-        
-        for i, data in enumerate(results):
-            if isinstance(data, Exception):
-                logger.error(f"Scraper {i} failed: {data}")
-                continue
-            if not isinstance(data, list): continue
-            if i in driver_idx:
-                driver.extend(data)
-            else:
-                jockey.extend(data)
-        
-        CACHE.update(jockey, driver)
-        elapsed = (datetime.now() - start).seconds
-        logger.info(f"✅ Done in {elapsed}s! Jockey: {len(jockey)} | Driver: {len(driver)}")
-        
-    except Exception as e:
-        logger.error(f"❌ {e}")
-    finally:
-        CACHE.is_scraping = False
+    results = await asyncio.gather(
+        TABtouchScraper().scrape(),
+        LadbrokesScraper().scrape_jockey(),
+        LadbrokesScraper().scrape_driver(),
+        ElitebetScraper().scrape(),
+        PointsBetScraper().scrape_jockey(),
+        PointsBetScraper().scrape_driver(),
+        return_exceptions=True
+    )
+    
+    jockey, driver = [], []
+    driver_idx = {2, 5}  # Indices for driver scrapers
+    
+    for i, data in enumerate(results):
+        if isinstance(data, Exception):
+            logger.error(f"Scraper {i} failed: {data}")
+            continue
+        if not isinstance(data, list):
+            continue
+        if i in driver_idx:
+            driver.extend(data)
+        else:
+            jockey.extend(data)
+    
+    elapsed = (datetime.now() - start).seconds
+    logger.info(f"✅ Done in {elapsed}s! Jockey: {len(jockey)} | Driver: {len(driver)}")
     
     return {
-        'jockey_challenges': CACHE.jockey_challenges,
-        'driver_challenges': CACHE.driver_challenges,
-        'last_updated': CACHE.last_updated.isoformat() if CACHE.last_updated else None
+        'jockey_challenges': jockey,
+        'driver_challenges': driver,
+        'last_updated': datetime.now().isoformat(),
+        'total_meetings': len(jockey) + len(driver)
     }
 
-def run_scraper_background():
-    """Run scraper in background"""
-    import threading
-    def _run():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(fetch_all_data())
-        loop.close()
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    return t
+
+async def send_to_api(data):
+    """Send scraped data to cPanel API"""
+    logger.info(f"\n📤 Sending to API: {API_URL}")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                API_URL,
+                json=data,
+                headers={'Content-Type': 'application/json'},
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    logger.info(f"✅ API Response: {result}")
+                    return True
+                else:
+                    text = await response.text()
+                    logger.error(f"❌ API Error {response.status}: {text}")
+                    return False
+    except Exception as e:
+        logger.error(f"❌ Failed to send: {e}")
+        return False
+
+
+async def main():
+    """Main entry point"""
+    # Run scrapers
+    data = await run_all_scrapers()
+    
+    logger.info(f"\n📊 Results:")
+    logger.info(f"   Jockey Challenges: {len(data['jockey_challenges'])}")
+    logger.info(f"   Driver Challenges: {len(data['driver_challenges'])}")
+    
+    # Send to cPanel API
+    if data['total_meetings'] > 0:
+        await send_to_api(data)
+    else:
+        logger.warning("⚠️ No data scraped")
+    
+    logger.info(f"\n✅ Completed at {datetime.now()}")
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
