@@ -1,16 +1,14 @@
-// src/components/LiveTracker.js
-// Live meeting tracker with auto-refresh and adjustable margin
-
-import React, { useState, useEffect, useCallback } from 'react';
-import { API, DEFAULT_MARGIN, LIVE_REFRESH_INTERVAL } from '../config';
-import MarginSlider from './MarginSlider';
+// src/components/LiveTracker.js - Using Centralized API
+import React, { useState, useEffect } from "react";
+import API from "../services/api";
+import MarginSlider from "./MarginSlider";
 
 function LiveTracker({ meetings = [] }) {
   const [activeTrackers, setActiveTrackers] = useState({});
   const [selectedMeeting, setSelectedMeeting] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [margin, setMargin] = useState(DEFAULT_MARGIN);
+  const [margin, setMargin] = useState(API.config.DEFAULT_MARGIN);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   // Fetch all active trackers on mount
@@ -21,23 +19,22 @@ function LiveTracker({ meetings = [] }) {
   // Auto-refresh active tracker
   useEffect(() => {
     if (!autoRefresh || !selectedMeeting) return;
-    
+
     const interval = setInterval(() => {
       handleAutoUpdate(selectedMeeting);
-    }, LIVE_REFRESH_INTERVAL);
-    
+    }, API.config.LIVE_REFRESH_INTERVAL);
+
     return () => clearInterval(interval);
   }, [autoRefresh, selectedMeeting]);
 
   const fetchTrackers = async () => {
     try {
-      const res = await fetch(API.liveTrackers);
-      const data = await res.json();
+      const data = await API.liveTracker.getTrackers();
       if (data.success) {
         setActiveTrackers(data.trackers || {});
       }
     } catch (err) {
-      console.error('Failed to fetch trackers:', err);
+      console.error("Failed to fetch trackers:", err);
     }
   };
 
@@ -45,29 +42,24 @@ function LiveTracker({ meetings = [] }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(API.initTracker, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          meeting: meeting.meeting,
-          type: type,
-          total_races: 8,
-          margin: margin
-        })
+      const data = await API.liveTracker.initTracker({
+        meeting: meeting.meeting,
+        type: type,
+        total_races: 8,
+        margin: margin,
       });
-      const data = await res.json();
-      
+
       if (data.success) {
-        setActiveTrackers(prev => ({
+        setActiveTrackers((prev) => ({
           ...prev,
-          [meeting.meeting]: data
+          [meeting.meeting]: data,
         }));
         setSelectedMeeting(meeting.meeting);
       } else {
-        setError(data.error || 'Failed to initialize tracker');
+        setError(data.error || "Failed to initialize tracker");
       }
     } catch (err) {
-      setError('Failed to connect to server');
+      setError("Failed to connect to server");
     } finally {
       setLoading(false);
     }
@@ -75,57 +67,47 @@ function LiveTracker({ meetings = [] }) {
 
   const handleAutoUpdate = async (meetingName) => {
     if (!meetingName) return;
-    
+
     try {
-      const res = await fetch(API.autoUpdate, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ meeting: meetingName })
-      });
-      const data = await res.json();
-      
+      const data = await API.liveTracker.autoUpdate(meetingName);
+
       if (data.success) {
-        setActiveTrackers(prev => ({
+        setActiveTrackers((prev) => ({
           ...prev,
-          [meetingName]: data
+          [meetingName]: data,
         }));
       }
     } catch (err) {
-      console.error('Auto-update failed:', err);
+      console.error("Auto-update failed:", err);
     }
   };
 
   const handleMarginChange = async (newMargin) => {
     setMargin(newMargin);
-    
+
     if (selectedMeeting) {
       try {
-        const res = await fetch(API.updateMargin, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            meeting: selectedMeeting,
-            margin: newMargin
-          })
-        });
-        const data = await res.json();
-        
+        const data = await API.liveTracker.updateMargin(
+          selectedMeeting,
+          newMargin
+        );
+
         if (data.success) {
-          setActiveTrackers(prev => ({
+          setActiveTrackers((prev) => ({
             ...prev,
-            [selectedMeeting]: data
+            [selectedMeeting]: data,
           }));
         }
       } catch (err) {
-        console.error('Failed to update margin:', err);
+        console.error("Failed to update margin:", err);
       }
     }
   };
 
   const deleteTracker = async (meetingName) => {
     try {
-      await fetch(API.deleteTracker(meetingName), { method: 'DELETE' });
-      setActiveTrackers(prev => {
+      await API.liveTracker.deleteTracker(meetingName);
+      setActiveTrackers((prev) => {
         const updated = { ...prev };
         delete updated[meetingName];
         return updated;
@@ -134,14 +116,14 @@ function LiveTracker({ meetings = [] }) {
         setSelectedMeeting(null);
       }
     } catch (err) {
-      console.error('Failed to delete tracker:', err);
+      console.error("Failed to delete tracker:", err);
     }
   };
 
   const getPointsColor = (points) => {
-    if (points >= 6) return '#22c55e';
-    if (points >= 3) return '#eab308';
-    return '#94a3b8';
+    if (points >= 6) return "#22c55e";
+    if (points >= 3) return "#eab308";
+    return "#94a3b8";
   };
 
   const tracker = selectedMeeting ? activeTrackers[selectedMeeting] : null;
@@ -175,30 +157,35 @@ function LiveTracker({ meetings = [] }) {
         <div className="meetings-list">
           {meetings.map((meeting, idx) => {
             const isTracking = !!activeTrackers[meeting.meeting];
-            const type = meeting.type || (meeting.jockeys ? 'jockey' : 'driver');
-            
+            const type =
+              meeting.type || (meeting.jockeys ? "jockey" : "driver");
+
             return (
-              <div 
-                key={idx} 
-                className={`meeting-item ${isTracking ? 'tracking' : ''} ${selectedMeeting === meeting.meeting ? 'selected' : ''}`}
+              <div
+                key={idx}
+                className={`meeting-item ${isTracking ? "tracking" : ""} ${
+                  selectedMeeting === meeting.meeting ? "selected" : ""
+                }`}
               >
                 <div className="meeting-info">
-                  <span className="meeting-icon">{type === 'jockey' ? '🏇' : '🏎️'}</span>
+                  <span className="meeting-icon">
+                    {type === "jockey" ? "🏇" : "🏎️"}
+                  </span>
                   <span className="meeting-name">{meeting.meeting}</span>
                   <span className="country-flag">
-                    {meeting.country === 'AU' ? '🇦🇺' : '🇳🇿'}
+                    {meeting.country === "AU" ? "🇦🇺" : "🇳🇿"}
                   </span>
                 </div>
                 <div className="meeting-actions">
                   {isTracking ? (
                     <>
-                      <button 
+                      <button
                         onClick={() => setSelectedMeeting(meeting.meeting)}
                         className="view-btn"
                       >
                         View
                       </button>
-                      <button 
+                      <button
                         onClick={() => deleteTracker(meeting.meeting)}
                         className="delete-btn"
                       >
@@ -206,12 +193,12 @@ function LiveTracker({ meetings = [] }) {
                       </button>
                     </>
                   ) : (
-                    <button 
+                    <button
                       onClick={() => initTracker(meeting, type)}
                       disabled={loading}
                       className="track-btn"
                     >
-                      {loading ? '...' : 'Track'}
+                      {loading ? "..." : "Track"}
                     </button>
                   )}
                 </div>
@@ -227,18 +214,24 @@ function LiveTracker({ meetings = [] }) {
           <div className="tracker-info">
             <h3>{tracker.meeting}</h3>
             <div className="race-progress">
-              <span>Race {tracker.races_completed} / {tracker.total_races}</span>
+              <span>
+                Race {tracker.races_completed} / {tracker.total_races}
+              </span>
               <div className="progress-bar">
-                <div 
+                <div
                   className="progress-fill"
-                  style={{ width: `${(tracker.races_completed / tracker.total_races) * 100}%` }}
+                  style={{
+                    width: `${
+                      (tracker.races_completed / tracker.total_races) * 100
+                    }%`,
+                  }}
                 />
               </div>
             </div>
           </div>
 
           {/* Margin Slider */}
-          <MarginSlider 
+          <MarginSlider
             value={tracker.margin || margin}
             onChange={handleMarginChange}
           />
@@ -259,16 +252,22 @@ function LiveTracker({ meetings = [] }) {
               </thead>
               <tbody>
                 {tracker.leaderboard?.map((p, idx) => (
-                  <tr key={idx} className={p.value === 'YES' ? 'value-bet' : ''}>
+                  <tr
+                    key={idx}
+                    className={p.value === "YES" ? "value-bet" : ""}
+                  >
                     <td className="rank">{p.rank}</td>
                     <td className="name">{p.name}</td>
-                    <td className="points" style={{ color: getPointsColor(p.points) }}>
+                    <td
+                      className="points"
+                      style={{ color: getPointsColor(p.points) }}
+                    >
                       {p.points}
                     </td>
                     <td className="remaining">{p.rides_remaining}</td>
                     <td className="odds">${p.starting_odds?.toFixed(2)}</td>
                     <td className="ai-price">${p.ai_price?.toFixed(2)}</td>
-                    <td className={`value ${p.value === 'YES' ? 'yes' : 'no'}`}>
+                    <td className={`value ${p.value === "YES" ? "yes" : "no"}`}>
                       {p.value}
                     </td>
                   </tr>
@@ -285,25 +284,28 @@ function LiveTracker({ meetings = [] }) {
                 <div key={idx} className="race-result">
                   <span className="race-num">R{race.race}</span>
                   <div className="placings">
-                    {race.results?.filter(r => r.position <= 3).map((r, i) => (
-                      <span key={i} className={`placing p${r.position}`}>
-                        {r.position === 1 && '🥇'}
-                        {r.position === 2 && '🥈'}
-                        {r.position === 3 && '🥉'}
-                        {r.jockey || r.driver || r.name}
-                      </span>
-                    ))}
+                    {race.results
+                      ?.filter((r) => r.position <= 3)
+                      .map((r, i) => (
+                        <span key={i} className={`placing p${r.position}`}>
+                          {r.position === 1 && "🥇"}
+                          {r.position === 2 && "🥈"}
+                          {r.position === 3 && "🥉"}
+                          {r.jockey || r.driver || r.name}
+                        </span>
+                      ))}
                   </div>
-                  {race.dead_heats && Object.keys(race.dead_heats).length > 0 && (
-                    <span className="dead-heat-badge">Dead Heat</span>
-                  )}
+                  {race.dead_heats &&
+                    Object.keys(race.dead_heats).length > 0 && (
+                      <span className="dead-heat-badge">Dead Heat</span>
+                    )}
                 </div>
               ))}
             </div>
           )}
 
           {/* Manual Refresh Button */}
-          <button 
+          <button
             onClick={() => handleAutoUpdate(selectedMeeting)}
             className="manual-refresh-btn"
           >

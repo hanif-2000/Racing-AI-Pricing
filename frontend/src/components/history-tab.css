@@ -1,0 +1,223 @@
+/* =====================================================
+   📜 HISTORY TAB - IMPROVED STYLES
+   Add this to your App.css or create history-tab.css
+   ===================================================== */
+
+/* Selected Day Details - Right Side */
+.selected-day-details {
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 20px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.selected-day-details h4 {
+  font-size: 1.1rem;
+  color: #f1f5f9;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Meetings List */
+.selected-day-details .meetings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Meeting Item Card */
+.selected-day-details .meeting-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  transition: all 0.2s ease;
+}
+
+.selected-day-details .meeting-item:hover {
+  background: rgba(15, 23, 42, 0.8);
+  border-color: rgba(59, 130, 246, 0.3);
+  transform: translateX(4px);
+}
+
+/* Meeting Info */
+.selected-day-details .meeting-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Meeting Name */
+.selected-day-details .meeting-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #f1f5f9;
+  min-width: 120px;
+}
+
+/* Meeting Type Badge */
+.selected-day-details .meeting-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.selected-day-details .meeting-type.jockey,
+.selected-day-details .meeting-item .meeting-type:contains("jockey") {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
+.selected-day-details .meeting-type.driver,
+.selected-day-details .meeting-item .meeting-type:contains("driver") {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+}
+
+/* Country Flag */
+.selected-day-details .meeting-country {
+  font-size: 1.2rem;
+  margin-left: 4px;
+}
+
+.selected-day-details .meeting-country.au {
+  filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.3));
+}
+
+.selected-day-details .meeting-country.nz {
+  filter: drop-shadow(0 0 4px rgba(34, 197, 94, 0.3));
+}
+
+/* Meeting Status Badge */
+.selected-day-details .meeting-status {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.selected-day-details .meeting-status.upcoming {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(99, 102, 241, 0.2));
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.selected-day-details .meeting-status.completed {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.2), rgba(16, 185, 129, 0.2));
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.selected-day-details .meeting-status.live {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(248, 113, 113, 0.2));
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  animation: pulse-live 1.5s infinite;
+}
+
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* No Meetings State */
+.selected-day-details .no-meetings {
+  text-align: center;
+  padding: 40px 20px;
+  color: #64748b;
+}
+
+.selected-day-details .no-meetings::before {
+  content: '📭';
+  display: block;
+  font-size: 2.5rem;
+  margin-bottom: 12px;
+}
+
+/* Calendar Day with meetings indicator */
+.calendar-day.has-meetings {
+  position: relative;
+}
+
+.calendar-day .meeting-dot {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 6px;
+  background: #22c55e;
+  border-radius: 50%;
+}
+
+.calendar-day.completed .meeting-dot {
+  background: #22c55e;
+}
+
+/* Scrollbar for meetings list */
+.selected-day-details::-webkit-scrollbar {
+  width: 6px;
+}
+
+.selected-day-details::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+}
+
+.selected-day-details::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+.selected-day-details::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* =====================================================
+   📱 MOBILE RESPONSIVE
+   ===================================================== */
+
+@media (max-width: 480px) {
+  .selected-day-details {
+    padding: 16px;
+    max-height: 400px;
+  }
+
+  .selected-day-details h4 {
+    font-size: 1rem;
+  }
+
+  .selected-day-details .meeting-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .selected-day-details .meeting-info {
+    width: 100%;
+  }
+
+  .selected-day-details .meeting-name {
+    font-size: 0.9rem;
+    min-width: auto;
+  }
+
+  .selected-day-details .meeting-status {
+    align-self: flex-start;
+  }
+}

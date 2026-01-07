@@ -1,6 +1,4 @@
-// src/components/HistoryTab.js
-// Fixed: Uses config.js instead of hardcoded URLs
-
+// src/components/HistoryTab.js - Fixed Status Calculation
 import React, { useState, useEffect } from 'react';
 import { API } from '../config';
 
@@ -23,7 +21,12 @@ function HistoryTab() {
       const res = await fetch(API.history(daysFilter));
       const data = await res.json();
       if (data.success) {
-        setHistoryData(data.history || []);
+        // Fix status based on date
+        const fixedHistory = (data.history || []).map(meeting => ({
+          ...meeting,
+          status: calculateStatus(meeting.date)
+        }));
+        setHistoryData(fixedHistory);
       } else {
         setError(data.error || 'Failed to load history');
       }
@@ -32,6 +35,23 @@ function HistoryTab() {
       setError('Failed to connect to server');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 🔥 Calculate correct status based on date
+  const calculateStatus = (dateStr) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const meetingDate = new Date(dateStr);
+    meetingDate.setHours(0, 0, 0, 0);
+    
+    if (meetingDate < today) {
+      return 'completed';
+    } else if (meetingDate.getTime() === today.getTime()) {
+      return 'live';
+    } else {
+      return 'upcoming';
     }
   };
 
@@ -117,6 +137,34 @@ function HistoryTab() {
   const selectedDateMeetings = getDateMeetings(selectedDate);
   const monthStats = getMonthStats();
 
+  // Get type icon
+  const getTypeIcon = (type) => type === 'jockey' ? '🏇' : '🏎️';
+  
+  // Get country flag
+  const getCountryFlag = (country) => country === 'AU' ? '🇦🇺' : '🇳🇿';
+
+  // Get status style
+  const getStatusStyle = (status) => {
+    const styles = {
+      completed: {
+        background: 'rgba(34, 197, 94, 0.2)',
+        color: '#4ade80',
+        border: '1px solid rgba(34, 197, 94, 0.3)'
+      },
+      live: {
+        background: 'rgba(239, 68, 68, 0.2)',
+        color: '#f87171',
+        border: '1px solid rgba(239, 68, 68, 0.3)'
+      },
+      upcoming: {
+        background: 'rgba(59, 130, 246, 0.2)',
+        color: '#60a5fa',
+        border: '1px solid rgba(59, 130, 246, 0.3)'
+      }
+    };
+    return styles[status] || styles.upcoming;
+  };
+
   if (loading) {
     return (
       <div className="history-tab">
@@ -138,6 +186,7 @@ function HistoryTab() {
 
   return (
     <div className="history-tab">
+      {/* Stats Bar */}
       <div className="month-stats-bar">
         <div className="month-stat">
           <span className="stat-label">Month Meetings</span>
@@ -169,7 +218,9 @@ function HistoryTab() {
         </div>
       </div>
 
+      {/* Main Content */}
       <div className="history-content">
+        {/* Calendar */}
         <div className="calendar-container">
           <div className="calendar-header">
             <button onClick={prevMonth} className="cal-nav-btn">◀</button>
@@ -209,6 +260,7 @@ function HistoryTab() {
           </div>
         </div>
 
+        {/* Selected Day Details */}
         <div className="selected-day-details">
           <h4>
             {selectedDate.toLocaleDateString('en-AU', { 
@@ -216,6 +268,18 @@ function HistoryTab() {
               day: 'numeric', 
               month: 'long' 
             })}
+            {isToday(selectedDate.getDate()) && 
+             currentMonth.getMonth() === new Date().getMonth() && 
+             currentMonth.getFullYear() === new Date().getFullYear() && (
+              <span style={{
+                marginLeft: '10px',
+                background: '#22c55e',
+                color: 'white',
+                padding: '4px 10px',
+                borderRadius: '6px',
+                fontSize: '0.75rem'
+              }}>Today</span>
+            )}
           </h4>
           
           {selectedDateMeetings.length === 0 ? (
@@ -225,13 +289,47 @@ function HistoryTab() {
               {selectedDateMeetings.map((meeting, idx) => (
                 <div key={idx} className="meeting-item">
                   <div className="meeting-info">
+                    {/* Type Icon */}
+                    <span style={{ fontSize: '1.3rem' }}>
+                      {getTypeIcon(meeting.type)}
+                    </span>
+                    
+                    {/* Meeting Name */}
                     <span className="meeting-name">{meeting.name}</span>
-                    <span className="meeting-type">{meeting.type}</span>
-                    <span className={`meeting-country ${meeting.country.toLowerCase()}`}>
-                      {meeting.country === 'AU' ? '🇦🇺' : '🇳🇿'}
+                    
+                    {/* Type Badge */}
+                    <span 
+                      style={{
+                        background: meeting.type === 'jockey' 
+                          ? 'rgba(34, 197, 94, 0.15)' 
+                          : 'rgba(168, 85, 247, 0.15)',
+                        color: meeting.type === 'jockey' ? '#4ade80' : '#c084fc',
+                        padding: '4px 10px',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        fontWeight: '600'
+                      }}
+                    >
+                      {meeting.type}
+                    </span>
+                    
+                    {/* Country Flag */}
+                    <span style={{ fontSize: '1.2rem' }}>
+                      {getCountryFlag(meeting.country)}
                     </span>
                   </div>
-                  <span className={`meeting-status ${meeting.status}`}>
+                  
+                  {/* Status Badge */}
+                  <span 
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '20px',
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      textTransform: 'uppercase',
+                      ...getStatusStyle(meeting.status)
+                    }}
+                  >
                     {meeting.status}
                   </span>
                 </div>

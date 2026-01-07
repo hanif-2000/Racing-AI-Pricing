@@ -1,4 +1,4 @@
-// src/App.js - UPDATED WITH CALENDAR & HISTORY
+// src/App.js - Using Centralized API Service
 import React, { useState, useEffect } from "react";
 import Header from "./components/Header";
 import PricesTab from "./components/PricesTab";
@@ -8,6 +8,8 @@ import CalendarTab from "./components/CalendarTab";
 import LiveTracker from "./components/LiveTracker";
 import LoadingShimmer from "./components/LoadingShimmer";
 import "./App.css";
+import "./mobile-responsive.css";
+import API from "./services/api";
 
 function App() {
   const [data, setData] = useState(null);
@@ -27,10 +29,7 @@ function App() {
     }
 
     try {
-      // const baseUrl = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000"; // stag
-      const baseUrl = process.env.REACT_APP_API_URL || "https://api.jockeydriverchallenge.com"; // prod
-      const response = await fetch(`${baseUrl}/api/ai-prices/`);
-      const result = await response.json();
+      const result = await API.prices.getAIPrices();
 
       if (
         result.jockey_challenges?.length > 0 ||
@@ -42,7 +41,7 @@ function App() {
 
       setError(null);
     } catch (err) {
-      setError("Backend not running. Start Django server first!");
+      setError("Wait, data loading!");
     }
 
     setLoading(false);
@@ -51,7 +50,7 @@ function App() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 60000);
+    const interval = setInterval(fetchData, API.config.DATA_REFRESH_INTERVAL);
     return () => clearInterval(interval);
   }, []);
 
@@ -174,7 +173,6 @@ function App() {
               <div className="error-state">
                 <span className="error-icon">⚠️</span>
                 <h3>{error}</h3>
-                <p>Make sure Django backend is running on port 8000</p>
                 <button onClick={fetchData} className="btn-retry">
                   Try Again
                 </button>
@@ -207,7 +205,7 @@ function App() {
 
       <footer className="footer">
         <p>
-          🏇 Racing AI Pricing • Live data from 6 Bookmakers • AU & NZ
+          🏇 AI Racing Pricing • Live data from 6 Bookmakers • AU & NZ
           Challenges
         </p>
       </footer>

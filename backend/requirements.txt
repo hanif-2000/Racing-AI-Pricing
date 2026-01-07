@@ -4,3 +4,5 @@ django-cors-headers
 gunicorn
 playwright
 whitenoise
+psycopg2-binary
+dj-database-url

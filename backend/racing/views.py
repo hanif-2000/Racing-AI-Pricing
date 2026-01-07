@@ -520,26 +520,49 @@ def calendar_view(request):
     
     return JsonResponse({'success': True, 'calendar': calendar, 'today': today.isoformat()})
 
-
 def history_view(request):
-    """Get past meetings"""
-    days = int(request.GET.get('days', 7))
+    """Get meetings with correct status based on date"""
+    days = int(request.GET.get('days', 30))
     today = date.today()
     start = today - timedelta(days=days)
+    end = today + timedelta(days=7)  # Include upcoming meetings too
     
-    meetings = Meeting.objects.filter(date__gte=start, date__lt=today).order_by('-date', 'name')
+    meetings = Meeting.objects.filter(date__gte=start, date__lte=end).order_by('-date', 'name')
     
     history = []
     for m in meetings:
+        # Calculate status based on date
+        if m.date < today:
+            status = 'completed'
+        elif m.date == today:
+            status = 'live'
+        else:
+            status = 'upcoming'
+        
         participants = Participant.objects.filter(meeting=m).order_by('final_position')
+        
         history.append({
-            'id': m.id, 'name': m.name, 'date': m.date.isoformat(),
-            'type': m.type, 'country': m.country, 'status': m.status,
-            'participants': [{'name': p.name, 'final_points': p.final_points, 'position': p.final_position} for p in participants]
+            'id': m.id,
+            'name': m.name,
+            'date': m.date.isoformat(),
+            'type': m.type,
+            'country': m.country,
+            'status': status,
+            'participants': [
+                {
+                    'name': p.name,
+                    'final_points': p.final_points,
+                    'position': p.final_position
+                } for p in participants
+            ]
         })
     
-    return JsonResponse({'success': True, 'history': history, 'days': days})
-
+    return JsonResponse({
+        'success': True,
+        'history': history,
+        'days': days,
+        'today': today.isoformat()
+    })
 
 def meeting_detail(request, meeting_id):
     """Get single meeting details"""

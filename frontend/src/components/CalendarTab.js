@@ -1,8 +1,6 @@
-// src/components/CalendarTab.js
-// Fixed: Uses config.js instead of hardcoded URLs
-
+// src/components/CalendarTab.js - Using Centralized API
 import React, { useState, useEffect } from 'react';
-import { API } from '../config';
+import API from '../services/api';
 
 function CalendarTab() {
   const [calendarData, setCalendarData] = useState({});
@@ -18,8 +16,7 @@ function CalendarTab() {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch(API.calendar);
-      const data = await res.json();
+      const data = await API.calendar.getCalendar();
       if (data.success) {
         setCalendarData(data.calendar || {});
       } else {
@@ -44,24 +41,16 @@ function CalendarTab() {
     return days;
   };
 
-  const formatDate = (date) => {
-    return date.toISOString().split('T')[0];
-  };
+  const formatDate = (date) => date.toISOString().split('T')[0];
 
   const getDayName = (date) => {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     return days[date.getDay()];
   };
 
-  const isToday = (date) => {
-    const today = new Date();
-    return date.toDateString() === today.toDateString();
-  };
+  const isToday = (date) => date.toDateString() === new Date().toDateString();
 
-  const getMeetingsForDate = (date) => {
-    const dateStr = formatDate(date);
-    return calendarData[dateStr] || [];
-  };
+  const getMeetingsForDate = (date) => calendarData[formatDate(date)] || [];
 
   const days = getNext7Days();
   const selectedMeetings = getMeetingsForDate(selectedDate);
