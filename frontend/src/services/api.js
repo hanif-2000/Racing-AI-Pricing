@@ -98,7 +98,7 @@ export const LiveTrackerAPI = {
   getTrackers: () => fetchAPI('/api/live/trackers/'),
   
   // Initialize a new tracker
-  initTracker: (data) => fetchAPI('/api/live/init/', {
+  initTracker: (data) => fetchAPI('/api/live-tracker/init/', {
     method: 'POST',
     body: JSON.stringify(data),
   }),
