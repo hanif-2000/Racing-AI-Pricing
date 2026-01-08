@@ -1,0 +1,464 @@
+/* src/components/LiveTracker.css */
+
+.live-tracker {
+  padding: 20px;
+}
+
+.tracker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.tracker-header h2 {
+  margin: 0;
+  color: #fff;
+}
+
+.auto-refresh-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #94a3b8;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.auto-refresh-toggle input {
+  cursor: pointer;
+}
+
+.error-banner {
+  background: #dc2626;
+  color: #fff;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.error-banner button {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+/* Meeting Selection */
+.meeting-selection {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.meeting-selection h3 {
+  margin: 0 0 15px 0;
+  color: #94a3b8;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+.meetings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.meeting-item {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  transition: all 0.2s ease;
+  border: 2px solid transparent;
+}
+
+.meeting-item.tracking {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.meeting-item.expanded {
+  border-color: #22c55e;
+}
+
+.meeting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  cursor: pointer;
+}
+
+.meeting-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.meeting-icon {
+  font-size: 20px;
+}
+
+.meeting-name {
+  font-weight: 600;
+  color: #fff;
+  font-size: 15px;
+}
+
+.country-flag {
+  font-size: 16px;
+}
+
+.meeting-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.track-btn {
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.track-btn:hover {
+  background: #2563eb;
+}
+
+.track-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.view-btn {
+  background: #22c55e;
+  color: #fff;
+  border: none;
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.view-btn:hover {
+  background: #16a34a;
+}
+
+.view-btn.active {
+  background: #f59e0b;
+}
+
+.delete-btn {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.delete-btn:hover {
+  background: #dc2626;
+}
+
+/* Tracker Display */
+.tracker-display {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 20px;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tracker-info {
+  margin-bottom: 20px;
+}
+
+.tracker-info h3 {
+  margin: 0 0 12px 0;
+  color: #fff;
+  font-size: 20px;
+}
+
+.race-progress {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.race-progress span {
+  color: #94a3b8;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #16a34a);
+  border-radius: 4px;
+  transition: width 0.5s ease;
+}
+
+/* Leaderboard */
+.leaderboard {
+  margin: 20px 0;
+  overflow-x: auto;
+}
+
+.leaderboard table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.leaderboard th {
+  text-align: left;
+  padding: 12px;
+  color: #94a3b8;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.leaderboard td {
+  padding: 14px 12px;
+  color: #e2e8f0;
+  font-size: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.leaderboard tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.leaderboard tr.value-bet {
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.leaderboard .rank {
+  font-weight: 600;
+  width: 40px;
+}
+
+.leaderboard .name {
+  font-weight: 500;
+}
+
+.leaderboard .points {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.leaderboard .ai-price {
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.leaderboard .value.yes {
+  color: #22c55e;
+  font-weight: 700;
+}
+
+.leaderboard .value.no {
+  color: #94a3b8;
+}
+
+/* Race Results Grid */
+.race-history {
+  margin-top: 25px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.race-history h4 {
+  margin: 0 0 15px 0;
+  color: #fff;
+  font-size: 16px;
+}
+
+.race-results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.race-result-card {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: transform 0.2s, border-color 0.2s;
+}
+
+.race-result-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.race-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.race-num {
+  font-weight: 700;
+  font-size: 14px;
+  color: #22c55e;
+}
+
+.dead-heat-badge {
+  background: #f59e0b;
+  color: #000;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.placings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.placing-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.placing-item.p1 .jockey-name {
+  color: #ffd700;
+}
+
+.placing-item.p2 .jockey-name {
+  color: #c0c0c0;
+}
+
+.placing-item.p3 .jockey-name {
+  color: #cd7f32;
+}
+
+.position-medal {
+  font-size: 14px;
+  width: 20px;
+}
+
+.jockey-name {
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+/* Manual Refresh Button */
+.manual-refresh-btn {
+  width: 100%;
+  margin-top: 20px;
+  padding: 14px;
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.manual-refresh-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+}
+
+.manual-refresh-btn:active {
+  transform: translateY(0);
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+  .live-tracker {
+    padding: 15px;
+  }
+
+  .tracker-header {
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .meeting-row {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .meeting-actions {
+    width: 100%;
+  }
+
+  .meeting-actions button {
+    flex: 1;
+  }
+
+  .leaderboard {
+    font-size: 12px;
+  }
+
+  .leaderboard th,
+  .leaderboard td {
+    padding: 10px 8px;
+  }
+
+  .race-results-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .race-results-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tracker-info h3 {
+    font-size: 18px;
+  }
+}
