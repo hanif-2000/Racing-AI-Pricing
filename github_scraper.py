@@ -16,6 +16,7 @@ from typing import List, Dict
 # =====================================================
 
 API_URL = 'https://api.jockeydriverchallenge.com/api/receive-scrape/'
+# API_URL = 'http://localhost:8000/api/receive-scrape/'
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)

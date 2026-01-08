@@ -1,10 +1,10 @@
 const getBaseURL = () => {
-  if (process.env.REACT_APP_API_URL) {
-    return process.env.REACT_APP_API_URL;
-  }
-  if (process.env.NODE_ENV === 'production') {
-    return 'https://api.jockeydriverchallenge.com';
-  }
+  // if (process.env.REACT_APP_API_URL) {
+  //   return process.env.REACT_APP_API_URL;
+  // }
+  // if (process.env.NODE_ENV === 'production') {
+  //   return 'https://api.jockeydriverchallenge.com';
+  // }
   return 'http://127.0.0.1:8000';
 };
 
