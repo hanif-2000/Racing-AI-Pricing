@@ -1,17 +1,12 @@
 const getBaseURL = () => {
-  // if (process.env.REACT_APP_API_URL) {
-  //   return process.env.REACT_APP_API_URL;
-  // }
-  // if (process.env.NODE_ENV === 'production') {
-  //   return 'https://api.jockeydriverchallenge.com';
-  // }
-  return 'http://127.0.0.1:8000';
+  return "https://api.jockeydriverchallenge.com";
+  // return "http://127.0.0.1:8000";
 };
 
 export const API_BASE_URL = getBaseURL();
 
 const defaultHeaders = {
-  'Content-Type': 'application/json',
+  "Content-Type": "application/json",
 };
 
 const fetchAPI = async (endpoint, options = {}) => {
@@ -32,13 +27,14 @@ const fetchAPI = async (endpoint, options = {}) => {
 };
 
 export const PricesAPI = {
-  getAIPrices: () => fetchAPI('/api/ai-prices/'),
-  getMeetingPrices: (meeting) => fetchAPI(`/api/prices/${encodeURIComponent(meeting)}/`),
-  refreshPrices: () => fetchAPI('/api/refresh/', { method: 'POST' }),
+  getAIPrices: () => fetchAPI("/api/ai-prices/"),
+  getMeetingPrices: (meeting) =>
+    fetchAPI(`/api/prices/${encodeURIComponent(meeting)}/`),
+  refreshPrices: () => fetchAPI("/api/refresh/", { method: "POST" }),
 };
 
 export const CalendarAPI = {
-  getCalendar: () => fetchAPI('/api/calendar/'),
+  getCalendar: () => fetchAPI("/api/calendar/"),
   getMeetingsByDate: (date) => fetchAPI(`/api/calendar/${date}/`),
 };
 
@@ -48,42 +44,50 @@ export const HistoryAPI = {
 };
 
 export const LiveTrackerAPI = {
-  getTrackers: () => fetchAPI('/api/live-tracker/'),
-  initTracker: (data) => fetchAPI('/api/live-tracker/init/', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
-  autoUpdate: (meeting) => fetchAPI('/api/live-tracker/auto-update/', {
-    method: 'POST',
-    body: JSON.stringify({ meeting }),
-  }),
-  updateMargin: (meeting, margin) => fetchAPI('/api/live-tracker/margin/', {
-    method: 'POST',
-    body: JSON.stringify({ meeting, margin }),
-  }),
-  addResult: (meeting, raceData) => fetchAPI('/api/live-tracker/update/', {
-    method: 'POST',
-    body: JSON.stringify({ meeting, ...raceData }),
-  }),
-  deleteTracker: (meeting) => fetchAPI(`/api/live-tracker/${encodeURIComponent(meeting)}/delete/`, {
-    method: 'POST',
-  }),
+  getTrackers: () => fetchAPI("/api/live-tracker/"),
+  initTracker: (data) =>
+    fetchAPI("/api/live-tracker/init/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  autoUpdate: (meeting) =>
+    fetchAPI("/api/live-tracker/auto-update/", {
+      method: "POST",
+      body: JSON.stringify({ meeting }),
+    }),
+  updateMargin: (meeting, margin) =>
+    fetchAPI("/api/live-tracker/margin/", {
+      method: "POST",
+      body: JSON.stringify({ meeting, margin }),
+    }),
+  addResult: (meeting, raceData) =>
+    fetchAPI("/api/live-tracker/update/", {
+      method: "POST",
+      body: JSON.stringify({ meeting, ...raceData }),
+    }),
+  deleteTracker: (meeting) =>
+    fetchAPI(`/api/live-tracker/${encodeURIComponent(meeting)}/delete/`, {
+      method: "POST",
+    }),
 };
 
 export const BetTrackerAPI = {
-  getBets: () => fetchAPI('/api/bets/'),
-  addBet: (bet) => fetchAPI('/api/bets/add/', {
-    method: 'POST',
-    body: JSON.stringify(bet),
-  }),
-  updateBet: (id, data) => fetchAPI('/api/bets/update/', {
-    method: 'POST',
-    body: JSON.stringify({ bet_id: id, ...data }),
-  }),
-  deleteBet: (id) => fetchAPI('/api/bets/delete/', {
-    method: 'POST',
-    body: JSON.stringify({ bet_id: id }),
-  }),
+  getBets: () => fetchAPI("/api/bets/"),
+  addBet: (bet) =>
+    fetchAPI("/api/bets/add/", {
+      method: "POST",
+      body: JSON.stringify(bet),
+    }),
+  updateBet: (id, data) =>
+    fetchAPI("/api/bets/update/", {
+      method: "POST",
+      body: JSON.stringify({ bet_id: id, ...data }),
+    }),
+  deleteBet: (id) =>
+    fetchAPI("/api/bets/delete/", {
+      method: "POST",
+      body: JSON.stringify({ bet_id: id }),
+    }),
 };
 
 export const API_CONFIG = {
