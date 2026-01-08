@@ -1,15 +1,10 @@
 """
-RACING VIEWS - PRODUCTION VERSION
-GitHub Actions integration + All endpoints + Enhanced Features
-- Persistent Global State (no data loss on restart)
-- Odds History Tracking
-- Auto Race Results Fetching
-- Points Ledger
+RACING VIEWS - PRODUCTION VERSION (FIXED)
+Database Persistence + Auto Results + All Endpoints
 """
 
 import logging
 logger = logging.getLogger(__name__)
-
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -17,15 +12,12 @@ from django.utils import timezone
 import json
 import copy
 from datetime import date, timedelta
-import threading
-import time
 
 from .models import (
     Meeting, Participant, MeetingOdds, Bet as BetModel,
     GlobalState, ScrapedDataManager, OddsSnapshot,
     LiveTrackerState, AutoFetchConfig, PointsLedger
 )
-from .live_tracker import LiveMeetingTracker
 
 
 # =====================================================
@@ -37,8 +29,6 @@ SCRAPED_DATA = {
     'driver_challenges': [],
     'last_updated': None
 }
-
-LIVE_TRACKERS = {}
 
 
 # =====================================================
@@ -71,7 +61,6 @@ def receive_scrape(request):
         return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
     
     try:
-        # Decode with UTF-8 explicitly
         body = request.body.decode('utf-8')
         data = json.loads(body)
         
@@ -96,6 +85,7 @@ def receive_scrape(request):
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
+
 def save_meetings_to_db(data):
     """Save meetings to database for calendar/history"""
     today = date.today()
@@ -111,7 +101,6 @@ def save_meetings_to_db(data):
             source = m.get('source', 'unknown')
             for j in m.get('jockeys', []):
                 Participant.objects.get_or_create(meeting=meeting, name=j['name'])
-                # Save odds history
                 if j.get('odds', 0) > 0:
                     MeetingOdds.objects.create(
                         meeting=meeting,
@@ -138,7 +127,6 @@ def save_meetings_to_db(data):
                         odds=d['odds']
                     )
     except Exception as e:
-        # print(f"Error saving to DB: {e}")
         logger.error(f"Error saving to DB: {e}")
 
 
@@ -441,31 +429,137 @@ def bet_summary(request):
 
 
 # =====================================================
-# LIVE TRACKER (In-Memory)
+# LIVE TRACKER - DATABASE PERSISTENCE (FIXED!)
 # =====================================================
+
+def _build_leaderboard(participants, margin=1.30):
+    """Helper to build leaderboard from participants dict"""
+    leaderboard = []
+    
+    for name, data in participants.items():
+        leaderboard.append({
+            'name': name,
+            'points': data.get('current_points', 0),
+            'rides_remaining': data.get('rides_remaining', 0),
+            'rides_total': data.get('rides_total', 0),
+            'starting_odds': data.get('starting_odds', 0),
+            'ai_price': data.get('ai_price', 0),
+            'value': data.get('value', 'NO'),
+            'positions': data.get('positions', []),
+            'points_history': data.get('points_history', [])
+        })
+    
+    leaderboard.sort(key=lambda x: (-x['points'], x['ai_price']))
+    
+    for i, item in enumerate(leaderboard):
+        item['rank'] = i + 1
+    
+    return leaderboard
+
+
+def _recalculate_ai_prices(participants, races_completed, margin=1.30):
+    """Recalculate AI prices based on current standings"""
+    if not participants:
+        return participants
+    
+    standings = []
+    for name, data in participants.items():
+        current_points = data.get('current_points', 0)
+        rides_remaining = data.get('rides_remaining', 0)
+        starting_odds = data.get('starting_odds', 0)
+        
+        if races_completed > 0:
+            avg_points = current_points / races_completed
+            estimated_final = current_points + (avg_points * rides_remaining)
+        else:
+            estimated_final = 1 / starting_odds if starting_odds > 0 else 0
+        
+        standings.append({
+            'name': name,
+            'current_points': current_points,
+            'estimated_final': estimated_final
+        })
+    
+    standings.sort(key=lambda x: (-x['current_points'], -x['estimated_final']))
+    
+    total_estimated = sum(s['estimated_final'] for s in standings) or 1
+    
+    for s in standings:
+        name = s['name']
+        prob = (s['estimated_final'] / total_estimated) * 100
+        
+        if prob > 0:
+            fair_price = 100 / prob
+            ai_price = fair_price * margin
+        else:
+            ai_price = 999
+        
+        participants[name]['ai_price'] = round(ai_price, 2)
+        participants[name]['value'] = 'YES' if participants[name].get('starting_odds', 0) > ai_price else 'NO'
+    
+    return participants
+
 
 @csrf_exempt
 def get_all_live_trackers(request):
-    """Get all active trackers"""
+    """Get all active trackers from DATABASE"""
+    trackers = LiveTrackerState.objects.filter(is_active=True)
+    
+    result = {}
+    for tracker in trackers:
+        participants = tracker.get_participants()
+        leaderboard = _build_leaderboard(participants, tracker.margin)
+        
+        result[tracker.meeting_name] = {
+            'success': True,
+            'meeting': tracker.meeting_name,
+            'type': tracker.meeting_type,
+            'margin': tracker.margin,
+            'total_races': tracker.total_races,
+            'races_completed': tracker.races_completed,
+            'races_remaining': tracker.total_races - tracker.races_completed,
+            'leaderboard': leaderboard,
+            'race_results': tracker.get_race_results(),
+            'updated_at': tracker.updated_at.isoformat()
+        }
+    
     return JsonResponse({
         'success': True,
-        'trackers': {k: v.to_dict() for k, v in LIVE_TRACKERS.items()},
-        'count': len(LIVE_TRACKERS)
+        'trackers': result,
+        'count': len(result)
     })
 
 
 @csrf_exempt
 def get_live_tracker(request, meeting_name):
-    """Get tracker for specific meeting"""
+    """Get tracker for specific meeting from DATABASE"""
     meeting = meeting_name.upper()
-    if meeting not in LIVE_TRACKERS:
+    
+    try:
+        tracker = LiveTrackerState.objects.get(meeting_name=meeting)
+    except LiveTrackerState.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
-    return JsonResponse({'success': True, **LIVE_TRACKERS[meeting].to_dict()})
+    
+    participants = tracker.get_participants()
+    leaderboard = _build_leaderboard(participants, tracker.margin)
+    
+    return JsonResponse({
+        'success': True,
+        'meeting': tracker.meeting_name,
+        'type': tracker.meeting_type,
+        'margin': tracker.margin,
+        'total_races': tracker.total_races,
+        'races_completed': tracker.races_completed,
+        'races_remaining': tracker.total_races - tracker.races_completed,
+        'leaderboard': leaderboard,
+        'race_results': tracker.get_race_results(),
+        'updated_at': tracker.updated_at.isoformat()
+    })
 
 
 @csrf_exempt
 def init_live_tracker(request):
-    """Initialize a live tracker"""
+    """Initialize a live tracker - SAVES TO DATABASE"""
     global SCRAPED_DATA
     
     if request.method != 'POST':
@@ -478,8 +572,14 @@ def init_live_tracker(request):
         total_races = data.get('total_races', 8)
         margin = float(data.get('margin', 1.30))
         
+        # Get participants from scraped data
+        if not SCRAPED_DATA.get('jockey_challenges'):
+            source_data = get_scraped_data_from_db()
+        else:
+            source_data = SCRAPED_DATA
+        
         participants = []
-        challenges = SCRAPED_DATA.get('jockey_challenges' if ctype == 'jockey' else 'driver_challenges', [])
+        challenges = source_data.get('jockey_challenges' if ctype == 'jockey' else 'driver_challenges', [])
         
         for item in challenges:
             if item['meeting'].upper() == meeting:
@@ -490,19 +590,76 @@ def init_live_tracker(request):
         if not participants:
             return JsonResponse({'success': False, 'error': f'No data for {meeting}'}, status=404)
         
-        tracker = LiveMeetingTracker(meeting, ctype, margin)
-        tracker.initialize_participants(participants, total_races)
+        # Build participants dict
+        participants_data = {}
+        for p in participants:
+            name = p.get('name', '')
+            participants_data[name] = {
+                'name': name,
+                'starting_odds': p.get('odds', 0),
+                'current_points': 0,
+                'rides_total': total_races,
+                'rides_remaining': total_races,
+                'positions': [],
+                'points_history': [],
+                'ai_price': 0,
+                'value': 'NO'
+            }
         
-        LIVE_TRACKERS[meeting] = tracker
+        # Calculate initial AI prices
+        participants_data = _recalculate_ai_prices(participants_data, 0, margin)
         
-        return JsonResponse({'success': True, **tracker.to_dict()})
+        # Save to DATABASE
+        tracker, created = LiveTrackerState.objects.update_or_create(
+            meeting_name=meeting,
+            defaults={
+                'meeting_type': ctype,
+                'margin': margin,
+                'total_races': total_races,
+                'races_completed': 0,
+                'is_active': True,
+                'race_results_data': '[]'
+            }
+        )
+        tracker.set_participants(participants_data)
+        tracker.save()
+        
+        # Also create AutoFetchConfig for this meeting
+        config, _ = AutoFetchConfig.objects.update_or_create(
+            meeting_name=meeting,
+            defaults={
+                'meeting_type': ctype,
+                'is_enabled': True,
+                'total_races': total_races
+            }
+        )
+        config.set_jockeys_list(list(participants_data.keys()))
+        config.save()
+        
+        leaderboard = _build_leaderboard(participants_data, margin)
+        
+        return JsonResponse({
+            'success': True,
+            'meeting': meeting,
+            'type': ctype,
+            'margin': margin,
+            'total_races': total_races,
+            'races_completed': 0,
+            'races_remaining': total_races,
+            'leaderboard': leaderboard,
+            'race_results': [],
+            'storage': 'database'
+        })
+        
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
 @csrf_exempt
 def update_race_result(request):
-    """Update race result for tracker"""
+    """Update race result for tracker - SAVES TO DATABASE"""
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
     
@@ -512,14 +669,129 @@ def update_race_result(request):
         race_num = data.get('race_num', 0)
         results = data.get('results', [])
         
-        if meeting not in LIVE_TRACKERS:
+        try:
+            tracker = LiveTrackerState.objects.get(meeting_name=meeting)
+        except LiveTrackerState.DoesNotExist:
             return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
         
-        tracker = LIVE_TRACKERS[meeting]
-        tracker.update_race_result(race_num, results)
+        if race_num <= tracker.races_completed:
+            return JsonResponse({'success': True, 'message': 'Race already processed'})
         
-        return JsonResponse({'success': True, **tracker.to_dict()})
+        participants = tracker.get_participants()
+        
+        # Points system
+        points_map = {1: 3, 2: 2, 3: 1}
+        
+        # Count positions for dead heat detection
+        position_counts = {}
+        for r in results:
+            pos = r.get('position', 0)
+            if pos in [1, 2, 3]:
+                position_counts[pos] = position_counts.get(pos, 0) + 1
+        
+        # Track who got points
+        participants_in_race = set()
+        
+        for r in results:
+            jockey = r.get('jockey', r.get('driver', r.get('name', '')))
+            position = r.get('position', 0)
+            
+            # Find matching participant (case-insensitive)
+            matched_name = None
+            for pname in participants.keys():
+                if pname.lower() == jockey.lower() or jockey.lower() in pname.lower() or pname.lower() in jockey.lower():
+                    matched_name = pname
+                    break
+            
+            if matched_name and position in [1, 2, 3]:
+                participants_in_race.add(matched_name)
+                
+                # Calculate points with dead heat
+                num_at_position = position_counts.get(position, 1)
+                
+                if num_at_position > 1:
+                    positions_consumed = list(range(position, min(position + num_at_position, 4)))
+                    total_points = sum(points_map.get(p, 0) for p in positions_consumed)
+                    points = round(total_points / num_at_position, 1)
+                else:
+                    points = points_map.get(position, 0)
+                
+                participants[matched_name]['current_points'] += points
+                participants[matched_name]['positions'].append(position)
+                participants[matched_name]['points_history'].append(points)
+                participants[matched_name]['rides_remaining'] -= 1
+        
+        # Mark non-placed participants
+        for name, pdata in participants.items():
+            if name not in participants_in_race and pdata['rides_remaining'] > 0:
+                pdata['rides_remaining'] -= 1
+                pdata['positions'].append(0)
+                pdata['points_history'].append(0)
+        
+        # Recalculate AI prices
+        participants = _recalculate_ai_prices(participants, race_num, tracker.margin)
+        
+        # Save race result
+        race_result = {
+            'race': race_num,
+            'results': results,
+            'dead_heats': {pos: count for pos, count in position_counts.items() if count > 1},
+            'timestamp': timezone.now().isoformat()
+        }
+        
+        # Update tracker in DATABASE
+        tracker.set_participants(participants)
+        tracker.races_completed = race_num
+        tracker.add_race_result(race_result)
+        tracker.save()
+        
+        # Also save to PointsLedger for history
+        today = date.today()
+        for r in results:
+            jockey = r.get('jockey', r.get('driver', r.get('name', '')))
+            position = r.get('position', 0)
+            
+            if position in [1, 2, 3]:
+                num_at_position = position_counts.get(position, 1)
+                is_dead_heat = num_at_position > 1
+                
+                if is_dead_heat:
+                    positions_consumed = list(range(position, min(position + num_at_position, 4)))
+                    total_points = sum(points_map.get(p, 0) for p in positions_consumed)
+                    points = round(total_points / num_at_position, 1)
+                else:
+                    points = points_map.get(position, 0)
+                
+                PointsLedger.objects.update_or_create(
+                    meeting_name=meeting,
+                    meeting_date=today,
+                    participant_name=jockey,
+                    race_number=race_num,
+                    defaults={
+                        'participant_type': tracker.meeting_type,
+                        'position': position,
+                        'points_earned': points,
+                        'is_dead_heat': is_dead_heat
+                    }
+                )
+        
+        leaderboard = _build_leaderboard(participants, tracker.margin)
+        
+        return JsonResponse({
+            'success': True,
+            'meeting': meeting,
+            'type': tracker.meeting_type,
+            'margin': tracker.margin,
+            'total_races': tracker.total_races,
+            'races_completed': tracker.races_completed,
+            'races_remaining': tracker.total_races - tracker.races_completed,
+            'leaderboard': leaderboard,
+            'race_results': tracker.get_race_results()
+        })
+        
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
@@ -534,20 +806,34 @@ def update_tracker_margin(request):
         meeting = data.get('meeting', '').upper()
         margin = float(data.get('margin', 1.30))
         
-        if meeting not in LIVE_TRACKERS:
+        try:
+            tracker = LiveTrackerState.objects.get(meeting_name=meeting)
+        except LiveTrackerState.DoesNotExist:
             return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
         
-        tracker = LIVE_TRACKERS[meeting]
-        tracker.set_margin(margin)
+        participants = tracker.get_participants()
+        participants = _recalculate_ai_prices(participants, tracker.races_completed, margin)
         
-        return JsonResponse({'success': True, **tracker.to_dict()})
+        tracker.margin = margin
+        tracker.set_participants(participants)
+        tracker.save()
+        
+        leaderboard = _build_leaderboard(participants, margin)
+        
+        return JsonResponse({
+            'success': True,
+            'meeting': meeting,
+            'margin': margin,
+            'leaderboard': leaderboard
+        })
+        
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
 @csrf_exempt
 def auto_update_tracker(request):
-    """Auto update tracker"""
+    """Auto update tracker - fetch latest from DB"""
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
     
@@ -555,10 +841,27 @@ def auto_update_tracker(request):
         data = json.loads(request.body)
         meeting = data.get('meeting', '').upper()
         
-        if meeting in LIVE_TRACKERS:
-            return JsonResponse({'success': True, **LIVE_TRACKERS[meeting].to_dict()})
+        try:
+            tracker = LiveTrackerState.objects.get(meeting_name=meeting)
+        except LiveTrackerState.DoesNotExist:
+            return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
         
-        return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
+        participants = tracker.get_participants()
+        leaderboard = _build_leaderboard(participants, tracker.margin)
+        
+        return JsonResponse({
+            'success': True,
+            'meeting': tracker.meeting_name,
+            'type': tracker.meeting_type,
+            'margin': tracker.margin,
+            'total_races': tracker.total_races,
+            'races_completed': tracker.races_completed,
+            'races_remaining': tracker.total_races - tracker.races_completed,
+            'leaderboard': leaderboard,
+            'race_results': tracker.get_race_results(),
+            'updated_at': tracker.updated_at.isoformat()
+        })
+        
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
@@ -567,10 +870,14 @@ def auto_update_tracker(request):
 def delete_live_tracker(request, meeting_name):
     """Delete a tracker"""
     meeting = meeting_name.upper()
-    if meeting in LIVE_TRACKERS:
-        del LIVE_TRACKERS[meeting]
-        return JsonResponse({'success': True, 'message': f'{meeting} deleted'})
-    return JsonResponse({'success': False, 'error': 'Not found'}, status=404)
+    
+    try:
+        tracker = LiveTrackerState.objects.get(meeting_name=meeting)
+        tracker.is_active = False
+        tracker.save()
+        return JsonResponse({'success': True, 'message': f'{meeting} deactivated'})
+    except LiveTrackerState.DoesNotExist:
+        return JsonResponse({'success': False, 'error': 'Not found'}, status=404)
 
 
 # =====================================================
@@ -598,16 +905,16 @@ def calendar_view(request):
 
 
 def history_view(request):
-    """Get meetings with correct status based on date"""
+    """Get meetings with results from PointsLedger"""
     days = int(request.GET.get('days', 30))
     today = date.today()
     start = today - timedelta(days=days)
-    end = today + timedelta(days=7)
     
-    meetings = Meeting.objects.filter(date__gte=start, date__lte=end).order_by('-date', 'name')
+    meetings = Meeting.objects.filter(date__gte=start, date__lte=today).order_by('-date', 'name')
     
     history = []
     for m in meetings:
+        # Determine status
         if m.date < today:
             status = 'completed'
         elif m.date == today:
@@ -615,7 +922,17 @@ def history_view(request):
         else:
             status = 'upcoming'
         
-        participants = Participant.objects.filter(meeting=m).order_by('final_position')
+        # Get standings from PointsLedger
+        standings = PointsLedger.get_meeting_standings(m.name, m.date)
+        
+        # Also check LiveTrackerState for additional data
+        try:
+            tracker = LiveTrackerState.objects.get(meeting_name=m.name)
+            races_completed = tracker.races_completed
+            total_races = tracker.total_races
+        except LiveTrackerState.DoesNotExist:
+            races_completed = 0
+            total_races = 8
         
         history.append({
             'id': m.id,
@@ -624,10 +941,11 @@ def history_view(request):
             'type': m.type,
             'country': m.country,
             'status': status,
-            'participants': [
-                {'name': p.name, 'final_points': p.final_points, 'position': p.final_position}
-                for p in participants
-            ]
+            'races_completed': races_completed,
+            'total_races': total_races,
+            'standings': standings[:5] if standings else [],  # Top 5
+            'winner': standings[0]['participant_name'] if standings else None,
+            'winner_points': standings[0]['total_points'] if standings else 0
         })
     
     return JsonResponse({
@@ -645,7 +963,28 @@ def meeting_detail(request, meeting_id):
     except Meeting.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'Not found'}, status=404)
     
-    participants = Participant.objects.filter(meeting=m)
+    # Get standings
+    standings = PointsLedger.get_meeting_standings(m.name, m.date)
+    
+    # Get race-by-race results
+    ledger_entries = PointsLedger.objects.filter(
+        meeting_name=m.name,
+        meeting_date=m.date
+    ).order_by('race_number', 'position')
+    
+    races = {}
+    for entry in ledger_entries:
+        race_key = f"R{entry.race_number}"
+        if race_key not in races:
+            races[race_key] = []
+        races[race_key].append({
+            'participant': entry.participant_name,
+            'position': entry.position,
+            'points': entry.points_earned,
+            'dead_heat': entry.is_dead_heat
+        })
+    
+    # Get odds history
     odds = MeetingOdds.objects.filter(meeting=m).order_by('-timestamp')[:50]
     
     return JsonResponse({
@@ -654,8 +993,13 @@ def meeting_detail(request, meeting_id):
             'id': m.id, 'name': m.name, 'date': m.date.isoformat(),
             'type': m.type, 'country': m.country, 'status': m.status
         },
-        'participants': [{'name': p.name, 'final_points': p.final_points, 'position': p.final_position} for p in participants],
-        'odds_history': [{'participant': o.participant_name, 'bookmaker': o.bookmaker, 'odds': o.odds, 'timestamp': o.timestamp.isoformat()} for o in odds]
+        'standings': standings,
+        'races': races,
+        'odds_history': [
+            {'participant': o.participant_name, 'bookmaker': o.bookmaker, 
+             'odds': o.odds, 'timestamp': o.timestamp.isoformat()} 
+            for o in odds
+        ]
     })
 
 
@@ -693,18 +1037,49 @@ def save_meeting_from_scrape(request):
 
 @csrf_exempt
 def fetch_race_results_api(request, meeting_name):
-    """Fetch race results"""
-    return JsonResponse({'success': True, 'meeting': meeting_name, 'results': []})
+    """Fetch race results - triggers auto-fetch"""
+    meeting = meeting_name.upper()
+    
+    try:
+        config = AutoFetchConfig.objects.get(meeting_name=meeting)
+        
+        from .auto_results import fetch_and_update_meeting
+        result = fetch_and_update_meeting(
+            meeting,
+            config.get_jockeys_list(),
+            config.last_race_fetched
+        )
+        
+        if result.get('success'):
+            config.last_fetch_at = timezone.now()
+            config.last_race_fetched = result.get('last_race', config.last_race_fetched)
+            config.save()
+        
+        return JsonResponse(result)
+        
+    except AutoFetchConfig.DoesNotExist:
+        return JsonResponse({'success': False, 'error': 'Config not found'}, status=404)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
 @csrf_exempt
 def auto_fetch_standings(request, meeting_name):
     """Auto fetch standings"""
-    return JsonResponse({'success': True, 'meeting': meeting_name, 'standings': []})
+    meeting = meeting_name.upper()
+    today = date.today()
+    
+    standings = PointsLedger.get_meeting_standings(meeting, today)
+    
+    return JsonResponse({
+        'success': True,
+        'meeting': meeting,
+        'standings': standings
+    })
 
 
 # =====================================================
-# ENHANCED: ODDS HISTORY TRACKING
+# ODDS HISTORY TRACKING
 # =====================================================
 
 def get_odds_history(request):
@@ -820,7 +1195,7 @@ def get_odds_comparison(request):
 
 
 # =====================================================
-# ENHANCED: AUTO RACE RESULTS FETCHING
+# AUTO FETCH CONTROL
 # =====================================================
 
 @csrf_exempt
@@ -921,9 +1296,8 @@ def trigger_auto_fetch(request):
         if not config:
             return JsonResponse({'success': False, 'error': 'Auto-fetch not enabled for this meeting'}, status=404)
         
-        # Try to import auto_results_fetcher
         try:
-            from .auto_results_fetcher import fetch_and_update_meeting
+            from .auto_results import fetch_and_update_meeting
             result = fetch_and_update_meeting(
                 meeting,
                 config.get_jockeys_list(),
@@ -939,7 +1313,7 @@ def trigger_auto_fetch(request):
         except ImportError:
             return JsonResponse({
                 'success': False, 
-                'error': 'auto_results_fetcher module not found'
+                'error': 'auto_results module not found'
             }, status=500)
         
     except Exception as e:
@@ -949,7 +1323,7 @@ def trigger_auto_fetch(request):
 
 
 # =====================================================
-# ENHANCED: POINTS LEDGER
+# POINTS LEDGER
 # =====================================================
 
 def get_points_ledger(request):
@@ -1079,131 +1453,16 @@ def record_race_points(request):
 
 
 # =====================================================
-# ENHANCED: PERSISTENT LIVE TRACKER
+# PERSISTENT LIVE TRACKER V2 (Already using DB above)
+# These are kept for URL compatibility
 # =====================================================
 
 @csrf_exempt
 def init_live_tracker_persistent(request):
-    """Initialize a live tracker with database persistence"""
-    if request.method != 'POST':
-        return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
-    
-    try:
-        data = json.loads(request.body)
-        meeting = data.get('meeting', '').upper()
-        ctype = data.get('type', 'jockey')
-        total_races = data.get('total_races', 8)
-        margin = float(data.get('margin', 1.30))
-        
-        scraped_data = get_scraped_data_from_db()
-        participants = []
-        
-        challenges = scraped_data.get('jockey_challenges' if ctype == 'jockey' else 'driver_challenges', [])
-        
-        for item in challenges:
-            if item['meeting'].upper() == meeting:
-                pkey = 'jockeys' if ctype == 'jockey' else 'drivers'
-                participants = item.get(pkey, [])
-                break
-        
-        if not participants:
-            return JsonResponse({'success': False, 'error': f'No data for {meeting}'}, status=404)
-        
-        participants_data = {}
-        for p in participants:
-            name = p.get('name', '')
-            participants_data[name] = {
-                'name': name,
-                'starting_odds': p.get('odds', 0),
-                'current_points': 0,
-                'rides_total': total_races,
-                'rides_remaining': total_races,
-                'positions': [],
-                'points_history': [],
-                'ai_price': 0,
-                'value': 'NO'
-            }
-        
-        tracker, created = LiveTrackerState.objects.update_or_create(
-            meeting_name=meeting,
-            defaults={
-                'meeting_type': ctype,
-                'margin': margin,
-                'total_races': total_races,
-                'races_completed': 0,
-                'is_active': True
-            }
-        )
-        tracker.set_participants(participants_data)
-        tracker.save()
-        
-        config, _ = AutoFetchConfig.objects.update_or_create(
-            meeting_name=meeting,
-            defaults={
-                'meeting_type': ctype,
-                'is_enabled': True,
-                'total_races': total_races
-            }
-        )
-        config.set_jockeys_list(list(participants_data.keys()))
-        config.save()
-        
-        return JsonResponse({
-            'success': True,
-            'meeting': meeting,
-            'type': ctype,
-            'margin': margin,
-            'total_races': total_races,
-            'participants_count': len(participants_data),
-            'storage': 'database'
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+    """Alias for init_live_tracker - both now use DB"""
+    return init_live_tracker(request)
 
 
 def get_live_tracker_persistent(request, meeting_name):
-    """Get tracker from database"""
-    meeting = meeting_name.upper()
-    
-    try:
-        tracker = LiveTrackerState.objects.get(meeting_name=meeting)
-    except LiveTrackerState.DoesNotExist:
-        return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
-    
-    participants = tracker.get_participants()
-    
-    leaderboard = []
-    for name, data in participants.items():
-        leaderboard.append({
-            'name': name,
-            'points': data.get('current_points', 0),
-            'rides_remaining': data.get('rides_remaining', 0),
-            'rides_total': data.get('rides_total', 0),
-            'starting_odds': data.get('starting_odds', 0),
-            'ai_price': data.get('ai_price', 0),
-            'value': data.get('value', 'NO'),
-            'positions': data.get('positions', []),
-            'points_history': data.get('points_history', [])
-        })
-    
-    leaderboard.sort(key=lambda x: (-x['points'], x['ai_price']))
-    
-    for i, item in enumerate(leaderboard):
-        item['rank'] = i + 1
-    
-    return JsonResponse({
-        'success': True,
-        'meeting': meeting,
-        'type': tracker.meeting_type,
-        'margin': tracker.margin,
-        'total_races': tracker.total_races,
-        'races_completed': tracker.races_completed,
-        'races_remaining': tracker.total_races - tracker.races_completed,
-        'leaderboard': leaderboard,
-        'race_results': tracker.get_race_results(),
-        'updated_at': tracker.updated_at.isoformat(),
-        'storage': 'database'
-    })
+    """Alias for get_live_tracker - both now use DB"""
+    return get_live_tracker(request, meeting_name)
