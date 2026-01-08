@@ -2,24 +2,30 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    # Main API
+    # =====================================================
+    # MAIN API ENDPOINTS
+    # =====================================================
     path('ai-prices/', views.get_ai_prices, name='ai_prices'),
     path('jockey-challenges/', views.get_jockey_challenges, name='jockey_challenges'),
     path('driver-challenges/', views.get_driver_challenges, name='driver_challenges'),
     path('comparison/', views.get_comparison, name='comparison'),
     path('refresh/', views.refresh_data, name='refresh'),
     
-    # GitHub Actions endpoint (NEW)
+    # GitHub Actions endpoint
     path('receive-scrape/', views.receive_scrape, name='receive_scrape'),
     
-    # Bet tracker
+    # =====================================================
+    # BET TRACKER
+    # =====================================================
     path('bets/', views.get_bets, name='get_bets'),
     path('bets/add/', views.add_bet, name='add_bet'),
     path('bets/update/', views.update_bet_result, name='update_bet'),
     path('bets/delete/', views.delete_bet, name='delete_bet'),
     path('bets/summary/', views.bet_summary, name='bet_summary'),
     
-    # Live tracker
+    # =====================================================
+    # LIVE TRACKER (In-Memory)
+    # =====================================================
     path('live-tracker/', views.get_all_live_trackers, name='live_trackers'),
     path('live-tracker/init/', views.init_live_tracker, name='init_live_tracker'),
     path('live-tracker/update/', views.update_race_result, name='update_race_result'),
@@ -28,14 +34,43 @@ urlpatterns = [
     path('live-tracker/<str:meeting_name>/', views.get_live_tracker, name='live_tracker'),
     path('live-tracker/<str:meeting_name>/delete/', views.delete_live_tracker, name='delete_live_tracker'),
     
-    # Calendar & History
+    # =====================================================
+    # CALENDAR & HISTORY
+    # =====================================================
     path('calendar/', views.calendar_view, name='calendar'),
     path('history/', views.history_view, name='history'),
     path('meeting/<int:meeting_id>/', views.meeting_detail, name='meeting_detail'),
     path('meeting/<int:meeting_id>/result/', views.save_meeting_result, name='save_result'),
     path('meeting/save/', views.save_meeting_from_scrape, name='save_meeting'),
     
-    # Auto Results
+    # Auto Results (placeholder)
     path('results/<str:meeting_name>/', views.fetch_race_results_api, name='fetch_results'),
     path('auto-standings/<str:meeting_name>/', views.auto_fetch_standings, name='auto_standings'),
+    
+    # =====================================================
+    # NEW: ODDS HISTORY TRACKING
+    # =====================================================
+    path('odds-history/', views.get_odds_history, name='odds_history'),
+    path('odds-movement/', views.get_odds_movement, name='odds_movement'),
+    path('odds-comparison/', views.get_odds_comparison, name='odds_comparison'),
+    
+    # =====================================================
+    # NEW: AUTO FETCH CONTROL
+    # =====================================================
+    path('auto-fetch/start/', views.start_auto_fetch, name='start_auto_fetch'),
+    path('auto-fetch/stop/', views.stop_auto_fetch, name='stop_auto_fetch'),
+    path('auto-fetch/status/', views.get_auto_fetch_status, name='auto_fetch_status'),
+    path('auto-fetch/trigger/', views.trigger_auto_fetch, name='trigger_auto_fetch'),
+    
+    # =====================================================
+    # NEW: POINTS LEDGER
+    # =====================================================
+    path('points-ledger/', views.get_points_ledger, name='points_ledger'),
+    path('points-ledger/record/', views.record_race_points, name='record_points'),
+    
+    # =====================================================
+    # NEW: PERSISTENT LIVE TRACKER (Database)
+    # =====================================================
+    path('v2/live-tracker/init/', views.init_live_tracker_persistent, name='init_tracker_v2'),
+    path('v2/live-tracker/<str:meeting_name>/', views.get_live_tracker_persistent, name='get_tracker_v2'),
 ]
