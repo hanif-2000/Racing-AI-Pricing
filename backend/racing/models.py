@@ -12,17 +12,12 @@ from django.db import models
 from django.utils import timezone
 import json
 
-
-# =====================================================
-# ORIGINAL MODELS (Unchanged)
-# =====================================================
-
 class Meeting(models.Model):
     name = models.CharField(max_length=100, db_index=True)
     date = models.DateField(db_index=True)
-    type = models.CharField(max_length=20)  # jockey / driver
+    type = models.CharField(max_length=20)  
     country = models.CharField(max_length=5, default='AU', db_index=True)
-    status = models.CharField(max_length=20, default='upcoming')  # upcoming/live/completed
+    status = models.CharField(max_length=20, default='upcoming') 
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
@@ -77,19 +72,13 @@ class Bet(models.Model):
     def __str__(self):
         return f"{self.participant} @ {self.meeting_name} - {self.result}"
 
-
-# =====================================================
-# NEW: GLOBAL STATE - Persistent Storage
-# (Replaces in-memory SCRAPED_DATA - no data loss on restart)
-# =====================================================
-
 class GlobalState(models.Model):
     """
     Stores scraped data persistently in database
     Replaces in-memory SCRAPED_DATA dictionary
     """
     key = models.CharField(max_length=100, unique=True, db_index=True)
-    value = models.TextField()  # JSON stored as text
+    value = models.TextField() 
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
@@ -192,11 +181,6 @@ class ScrapedDataManager:
                         odds=odds
                     )
 
-
-# =====================================================
-# NEW: ODDS SNAPSHOT - Historical Odds Tracking
-# =====================================================
-
 class OddsSnapshot(models.Model):
     """
     Stores historical odds for each participant
@@ -213,7 +197,7 @@ class OddsSnapshot(models.Model):
     meeting_name = models.CharField(max_length=100, db_index=True)
     meeting_date = models.DateField(db_index=True)
     participant_name = models.CharField(max_length=100, db_index=True)
-    participant_type = models.CharField(max_length=20)  # jockey/driver
+    participant_type = models.CharField(max_length=20) 
     bookmaker = models.CharField(max_length=50, db_index=True)
     odds = models.FloatField()
     ai_price = models.FloatField(null=True, blank=True)
@@ -281,9 +265,9 @@ class OddsSnapshot(models.Model):
         pct_change = (change / first.odds) * 100 if first.odds > 0 else 0
         
         if change > 0.5:
-            movement = 'drifting'  # Odds increasing = less favored
+            movement = 'drifting'
         elif change < -0.5:
-            movement = 'firming'  # Odds decreasing = more favored
+            movement = 'firming' 
         else:
             movement = 'stable'
         
@@ -296,12 +280,6 @@ class OddsSnapshot(models.Model):
             'snapshots': history.count()
         }
 
-
-# =====================================================
-# NEW: LIVE TRACKER STATE - Persistent Live Trackers
-# (Replaces in-memory LIVE_TRACKERS dict)
-# =====================================================
-
 class LiveTrackerState(models.Model):
     """
     Stores live tracker data in database
@@ -309,12 +287,12 @@ class LiveTrackerState(models.Model):
     Data survives server restarts
     """
     meeting_name = models.CharField(max_length=100, unique=True, db_index=True)
-    meeting_type = models.CharField(max_length=20)  # jockey/driver
+    meeting_type = models.CharField(max_length=20) 
     margin = models.FloatField(default=1.30)
     total_races = models.IntegerField(default=8)
     races_completed = models.IntegerField(default=0)
-    participants_data = models.TextField()  # JSON
-    race_results_data = models.TextField(default='[]')  # JSON
+    participants_data = models.TextField()
+    race_results_data = models.TextField(default='[]')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -345,11 +323,6 @@ class LiveTrackerState(models.Model):
         results.append(result)
         self.race_results_data = json.dumps(results, default=str)
 
-
-# =====================================================
-# NEW: AUTO FETCH CONFIG - Auto Results Fetching
-# =====================================================
-
 class AutoFetchConfig(models.Model):
     """
     Configuration for automatic results fetching
@@ -366,13 +339,13 @@ class AutoFetchConfig(models.Model):
         config.save()
     """
     meeting_name = models.CharField(max_length=100, unique=True, db_index=True)
-    meeting_type = models.CharField(max_length=20)  # jockey/driver
+    meeting_type = models.CharField(max_length=20)
     is_enabled = models.BooleanField(default=True)
-    fetch_interval_seconds = models.IntegerField(default=60)  # Check every 60 sec
+    fetch_interval_seconds = models.IntegerField(default=60) 
     last_fetch_at = models.DateTimeField(null=True, blank=True)
     last_race_fetched = models.IntegerField(default=0)
     total_races = models.IntegerField(default=8)
-    jockeys_list = models.TextField(default='[]')  # JSON list of jockey names
+    jockeys_list = models.TextField(default='[]') 
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
@@ -391,11 +364,6 @@ class AutoFetchConfig(models.Model):
     def set_jockeys_list(self, jockeys):
         """Save jockeys list as JSON"""
         self.jockeys_list = json.dumps(jockeys)
-
-
-# =====================================================
-# NEW: POINTS LEDGER - Detailed Points Tracking
-# =====================================================
 
 class PointsLedger(models.Model):
     """
@@ -421,12 +389,12 @@ class PointsLedger(models.Model):
     meeting_name = models.CharField(max_length=100, db_index=True)
     meeting_date = models.DateField(db_index=True)
     participant_name = models.CharField(max_length=100, db_index=True)
-    participant_type = models.CharField(max_length=20)  # jockey/driver
+    participant_type = models.CharField(max_length=20)  
     race_number = models.IntegerField()
-    position = models.IntegerField()  # 1, 2, 3, or 0 for unplaced
-    points_earned = models.FloatField()  # 3, 2, 1, 0.5 (dead heat), 0
+    position = models.IntegerField() 
+    points_earned = models.FloatField()
     is_dead_heat = models.BooleanField(default=False)
-    dead_heat_with = models.CharField(max_length=200, blank=True)  # Other jockeys in dead heat
+    dead_heat_with = models.CharField(max_length=200, blank=True) 
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
@@ -505,8 +473,6 @@ class PointsLedger(models.Model):
             list of created entries
         """
         points_map = {1: 3, 2: 2, 3: 1}
-        
-        # Detect dead heats
         position_counts = {}
         for r in results:
             pos = r.get('position', 0)
@@ -521,28 +487,21 @@ class PointsLedger(models.Model):
             
             if not jockey or position not in [1, 2, 3]:
                 continue
-            
-            # Calculate points with dead heat handling
             num_at_position = position_counts.get(position, 1)
             is_dead_heat = num_at_position > 1
             
             if is_dead_heat:
-                # Dead heat - split points
                 positions_consumed = list(range(position, min(position + num_at_position, 4)))
                 total_points = sum(points_map.get(p, 0) for p in positions_consumed)
                 points = round(total_points / num_at_position, 1)
             else:
                 points = points_map.get(position, 0)
-            
-            # Find dead heat partners
             dead_heat_with = ''
             if is_dead_heat:
                 partners = [r2.get('jockey', r2.get('driver', '')) 
                            for r2 in results 
                            if r2.get('position') == position and r2.get('jockey', r2.get('driver', '')) != jockey]
                 dead_heat_with = ', '.join(partners)
-            
-            # Create or update entry
             entry, created = cls.objects.update_or_create(
                 meeting_name=meeting_name.upper(),
                 meeting_date=meeting_date,

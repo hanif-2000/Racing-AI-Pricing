@@ -2,26 +2,28 @@ name: Results Fetcher
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Every 5 minutes
-  workflow_dispatch:  # Manual trigger
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
   fetch-results:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 10
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: Install dependencies
         run: |
           pip install playwright requests
           playwright install chromium
-      
+          playwright install-deps chromium
+
       - name: Run Results Fetcher
         run: python results_fetcher.py
