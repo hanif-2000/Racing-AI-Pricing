@@ -262,16 +262,24 @@ def fetch_and_update_meeting(meeting_name: str, jockeys_list: List[str], last_ra
     
     # Run async fetch
     fetcher = AutoResultsFetcher()
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
+
     try:
+        # Use existing event loop if available, otherwise create a new one
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Loop is closed")
         fetch_result = loop.run_until_complete(
             fetcher.fetch_results(meeting_name, last_race_fetched)
         )
-    finally:
-        loop.close()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            fetch_result = loop.run_until_complete(
+                fetcher.fetch_results(meeting_name, last_race_fetched)
+            )
+        finally:
+            loop.close()
     
     if not fetch_result['success']:
         return fetch_result
