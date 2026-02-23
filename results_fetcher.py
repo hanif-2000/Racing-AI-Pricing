@@ -4,10 +4,10 @@ Fetches race results from Racing Australia (racingaustralia.horse)
 Uses simple HTTP requests - no Playwright/browser needed.
 
 Strategy:
-1. Scrape all state calendars to discover today's venues + result URLs (8 requests)
-2. Match active meetings to discovered venues using flexible name matching
-3. Fetch results only for matched venues (N requests)
-Total: ~8 + N requests = fast, under 1 minute
+1. Scrape state calendars to discover today's venues + result URLs (8 requests)
+2. Match active meetings to discovered venues
+3. For unmatched meetings, try direct URL with base name (8 requests max)
+4. Fetch results only for matched venues
 """
 
 import re
@@ -24,7 +24,7 @@ HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
 }
 
-# Common sponsor prefixes to strip for matching
+# Sponsor prefixes to strip for matching
 SPONSOR_PREFIXES = [
     "picklebet park ", "picklebet ", "sportsbet-", "sportsbet ",
     "bet365 park ", "bet365 ", "ladbrokes ", "southside ",
@@ -33,34 +33,31 @@ SPONSOR_PREFIXES = [
 
 
 def get_australian_date():
-    """Get current date in Australian Eastern time."""
     now_utc = datetime.now(timezone.utc)
     return now_utc + timedelta(hours=11)  # AEDT
 
 
 def normalize_venue(name):
-    """Normalize venue name by stripping sponsors and lowercasing."""
+    """Normalize venue name for matching."""
     n = name.lower().strip()
-    # Strip sponsor prefixes
     for prefix in SPONSOR_PREFIXES:
         if n.startswith(prefix):
             n = n[len(prefix):]
             break
-    # Strip state suffix
     n = re.sub(r'\s+(nsw|vic|qld|sa|wa|tas|nt|act)\s*$', '', n)
-    # Strip race type suffix
     n = re.sub(r'\s*-\s*(professional|trial|picnic|jumpout).*$', '', n)
-    # Strip "scarpside", "hillside", "heath", "park" suffixes for broader matching
     n = re.sub(r'\s+(scarpside|hillside|heath)$', '', n)
     return re.sub(r'[^a-z]', '', n)
 
 
+def to_title_case(name):
+    return ' '.join(word.capitalize() for word in name.split())
+
+
 def discover_todays_venues():
-    """Scrape all state calendar pages to discover today's venues with result URLs.
-    Returns list of {name, state, url, normalized}.
-    """
+    """Scrape state calendar pages to find today's venues with result URLs."""
     aus_now = get_australian_date()
-    date_key = aus_now.strftime('%Y%b%d')  # e.g. "2026Feb23"
+    date_key = aus_now.strftime('%Y%b%d')
     venues = []
 
     for state in STATES:
@@ -72,28 +69,25 @@ def discover_todays_venues():
 
             html = resp.text
 
-            # Find all result links for today's date key
-            # Matches: href="/FreeFields/Results.aspx?Key=2026Feb23,QLD,Picklebet Park Warwick"
-            # or with race type: Key=2026Feb23,VIC,Sportsbet-Ballarat,Trial
-            pattern = rf'Results\.aspx\?Key={re.escape(date_key)},{re.escape(state)},([^"&]+)'
+            # Match href with BOTH single and double quotes
+            # Pattern: href='/FreeFields/Results.aspx?Key=2026Feb23,QLD,Picklebet Park Warwick'
+            pattern = rf"""Results\.aspx\?Key={re.escape(date_key)},{re.escape(state)},([^"'&<>]+)"""
             matches = re.findall(pattern, html)
 
-            seen_urls = set()
-            for raw_venue in matches:
-                # Decode URL encoding
-                venue_with_type = raw_venue.replace('%20', ' ').strip()
+            seen = set()
+            for raw in matches:
+                venue_key = raw.replace('%20', ' ').strip()
 
-                # Skip trials and jump outs
-                if ',Trial' in venue_with_type or ',JumpOut' in venue_with_type:
+                if ',Trial' in venue_key or ',JumpOut' in venue_key:
                     continue
 
-                # Remove optional race type suffix from the key
-                venue_name = re.sub(r',(?:Professional|Picnic)$', '', venue_with_type)
+                # Remove race type suffix
+                venue_name = re.sub(r',(?:Professional|Picnic)$', '', venue_key)
 
-                result_url = f"{RA_BASE}/FreeFields/Results.aspx?Key={date_key},{state},{venue_with_type}"
+                result_url = f"{RA_BASE}/FreeFields/Results.aspx?Key={date_key},{state},{venue_key}"
 
-                if result_url not in seen_urls:
-                    seen_urls.add(result_url)
+                if venue_name not in seen:
+                    seen.add(venue_name)
                     venues.append({
                         'name': venue_name,
                         'state': state,
@@ -102,9 +96,9 @@ def discover_todays_venues():
                     })
 
         except Exception as e:
-            print(f"  [Calendar] Error fetching {state}: {e}")
+            print(f"  [Calendar] {state} error: {e}")
 
-    return venues
+    return venues, date_key
 
 
 def match_meeting_to_venue(meeting_name, venues):
@@ -118,41 +112,59 @@ def match_meeting_to_venue(meeting_name, venues):
 
     # Pass 2: One contains the other
     for v in venues:
-        if api_norm in v['normalized'] or v['normalized'] in api_norm:
-            if len(api_norm) >= 3 and len(v['normalized']) >= 3:
+        if len(api_norm) >= 3 and len(v['normalized']) >= 3:
+            if api_norm in v['normalized'] or v['normalized'] in api_norm:
                 return v
 
-    # Pass 3: All significant words match
-    api_words = set(api_norm)  # Already stripped, this is character set - not useful
-    # Better: use word-level matching
-    api_words = set(re.sub(r'[^a-z\s]', '', meeting_name.lower()).split())
-    filler = {'park', 'the', 'and', 'of'}
-    api_words -= filler
+    # Pass 3: Word-level matching
+    api_words = set(meeting_name.lower().split()) - {'park', 'the', 'and', 'of'}
     for v in venues:
-        v_words = set(re.sub(r'[^a-z\s]', '', v['name'].lower()).split())
-        v_words -= filler
+        v_words = set(re.sub(r'[^a-z\s]', '', v['name'].lower()).split()) - {'park', 'the', 'and', 'of'}
         if api_words and v_words and (api_words.issubset(v_words) or v_words.issubset(api_words)):
             return v
 
     return None
 
 
+def try_direct_url(meeting_name, date_key):
+    """Fallback: try direct URL construction for unmatched meetings."""
+    venue = to_title_case(meeting_name)
+
+    for state in STATES:
+        url = f"{RA_BASE}/FreeFields/Results.aspx?Key={date_key},{state},{venue}"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=8)
+            if resp.status_code != 200:
+                continue
+            html = resp.text
+            if 'Results for this meeting are not currently available' in html:
+                continue
+            if '<a name="Race1"' not in html:
+                continue
+            return html, url, state
+        except Exception:
+            continue
+
+    return None, None, None
+
+
 def count_total_races(html):
-    """Count actual number of races from HTML."""
     race_nums = re.findall(r'<a\s+name="Race(\d+)"', html)
     return max(int(n) for n in race_nums) if race_nums else 0
 
 
-def fetch_race_results(result_url, meeting_name):
-    """Fetch and parse results from a RA results page."""
+def fetch_race_results(result_url_or_html, meeting_name, is_html=False):
+    """Parse results from RA results page."""
     results = []
 
     try:
-        resp = requests.get(result_url, headers=HEADERS, timeout=15)
-        if resp.status_code != 200:
-            return results, 0
-
-        html = resp.text
+        if is_html:
+            html = result_url_or_html
+        else:
+            resp = requests.get(result_url_or_html, headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                return results, 0
+            html = resp.text
 
         if 'Results for this meeting are not currently available' in html:
             return results, 0
@@ -171,8 +183,7 @@ def fetch_race_results(result_url, meeting_name):
                 if idx > 0:
                     section = section[:idx]
 
-            # Extract jockey/driver names from profile links
-            pattern = r'(?:JockeyLastRuns|DriverLastStarts)\.aspx\?\w+=[^"]*"[^>]*>\s*([^<]+?)\s*</a>'
+            pattern = r'(?:JockeyLastRuns|DriverLastStarts)\.aspx\?\w+=[^"\']*["\'][^>]*>\s*([^<]+?)\s*</a>'
             names = re.findall(pattern, section)
 
             race_results = []
@@ -195,14 +206,13 @@ def fetch_race_results(result_url, meeting_name):
                 print(f"  R{race_num}: {pos}")
 
     except Exception as e:
-        print(f"  Error: {e}")
+        print(f"  Parse error: {e}")
         return results, 0
 
     return results, total_races
 
 
 def send_results_to_api(meeting_name, race_num, results, actual_total_races=None):
-    """Send results to production API."""
     try:
         payload = {
             'meeting': meeting_name.upper(),
@@ -214,8 +224,7 @@ def send_results_to_api(meeting_name, race_num, results, actual_total_races=None
 
         response = requests.post(
             f"{API_URL}/api/live-tracker/update/",
-            json=payload,
-            timeout=30
+            json=payload, timeout=30
         )
 
         if response.status_code == 200:
@@ -224,14 +233,12 @@ def send_results_to_api(meeting_name, race_num, results, actual_total_races=None
         else:
             print(f"  [API] Failed R{race_num}: {response.status_code}")
             return None
-
     except Exception as e:
         print(f"  [API] Error: {e}")
         return None
 
 
 def get_active_meetings():
-    """Get meetings being tracked from API."""
     try:
         response = requests.get(f"{API_URL}/api/live-tracker/", timeout=60)
         if response.status_code == 200:
@@ -261,7 +268,6 @@ def main():
     print(f"AEDT: {aus_now.isoformat()}")
     print(f"{'='*60}")
 
-    # Step 1: Get active meetings
     meetings = get_active_meetings()
     if not meetings:
         print("No active meetings")
@@ -281,18 +287,14 @@ def main():
         print("No jockey meetings to process")
         return
 
-    # Step 2: Discover today's venues from RA calendars (8 requests)
+    # Step 1: Discover today's venues from RA calendars
     print(f"\nDiscovering today's venues from Racing Australia...")
-    venues = discover_todays_venues()
+    venues, date_key = discover_todays_venues()
     print(f"Found {len(venues)} venues:")
     for v in venues:
-        print(f"  - {v['name']} ({v['state']}) [{v['normalized']}]")
+        print(f"  - {v['name']} ({v['state']}) [norm: {v['normalized']}]")
 
-    if not venues:
-        print("No venues found on RA for today")
-        return
-
-    # Step 3: Match and fetch
+    # Step 2: Match and fetch
     print(f"\n{'='*60}")
     print("Matching & fetching results...")
     print(f"{'='*60}")
@@ -306,18 +308,42 @@ def main():
 
         print(f"\n--- {name} ({last_race}/{tracker_total}) ---")
 
+        # Try calendar match first
         matched = match_meeting_to_venue(name, venues)
-        if not matched:
-            print(f"  No match (norm: '{normalize_venue(name)}')")
-            continue
 
-        print(f"  Matched: {matched['name']} ({matched['state']})")
+        html = None
+        result_url = None
 
-        results, actual_total = fetch_race_results(matched['url'], name)
+        if matched:
+            print(f"  Matched: {matched['name']} ({matched['state']})")
+            result_url = matched['url']
+        else:
+            # Fallback: try direct URL with base name across all states
+            print(f"  No calendar match (norm: '{normalize_venue(name)}'), trying direct URL...")
+            html, result_url, state = try_direct_url(name, date_key)
+            if html:
+                print(f"  Found via direct URL ({state})")
+            else:
+                # Try yesterday
+                yesterday_key = (aus_now - timedelta(days=1)).strftime('%Y%b%d')
+                html, result_url, state = try_direct_url(name, yesterday_key)
+                if html:
+                    print(f"  Found via direct URL yesterday ({state})")
+                else:
+                    print(f"  Not found on RA")
+                    continue
+
+        # Fetch and parse results
+        if html:
+            results, actual_total = fetch_race_results(html, name, is_html=True)
+        else:
+            results, actual_total = fetch_race_results(result_url, name)
+
         if not results:
             print(f"  No results yet")
             continue
 
+        # Check total races mismatch
         actual_total_to_send = None
         if actual_total > 0 and actual_total != tracker_total:
             print(f"  Races: tracker={tracker_total}, actual={actual_total}")
