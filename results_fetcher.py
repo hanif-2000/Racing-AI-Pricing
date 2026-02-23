@@ -1,24 +1,51 @@
 """
 RESULTS FETCHER - Runs in GitHub Actions
-Fetches race results from Racing Australia (racingaustralia.horse)
+Fetches race results from:
+  - Racing Australia (racingaustralia.horse) for thoroughbred/jockey challenges
+  - HRNZ (infohorse.hrnz.co.nz) for NZ harness/driver challenges
 Uses simple HTTP requests - no Playwright/browser needed.
-
-Strategy:
-1. Scrape state calendars to discover today's venues + result URLs (8 requests)
-2. Match active meetings to discovered venues
-3. For unmatched meetings, try direct URL with base name (8 requests max)
-4. Fetch results only for matched venues
 """
 
 import re
 import requests
+import urllib3
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
+# Suppress SSL warnings for HRNZ (self-signed cert)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 API_URL = "https://api.jockeydriverchallenge.com"
 RA_BASE = "https://www.racingaustralia.horse"
+HRNZ_BASE = "https://infohorse.hrnz.co.nz/datahrs/results"
 
 STATES = ["NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"]
+
+# Known HRNZ club name mappings (bookmaker name -> HRNZ club name patterns)
+HRNZ_VENUE_ALIASES = {
+    'wanganui': ['manawatu', 'wanganui'],
+    'otaki': ['otaki'],
+    'auckland': ['auckland'],
+    'ashburton': ['ashburton'],
+    'addington': ['addington', 'nz metropolitan'],
+    'cambridge': ['cambridge', 'waikato'],
+    'winton': ['winton'],
+    'gore': ['gore'],
+    'wyndham': ['wyndham'],
+    'invercargill': ['southland', 'invercargill'],
+    'manawatu': ['manawatu'],
+    'forbury': ['forbury', 'otago'],
+    'rangiora': ['rangiora', 'amberley'],
+    'banks peninsula': ['banks peninsula'],
+    'oamaru': ['oamaru', 'north otago'],
+    'methven': ['methven'],
+    'cromwell': ['cromwell', 'central otago'],
+    'kaikoura': ['kaikoura'],
+    'geraldine': ['geraldine'],
+    'reefton': ['reefton'],
+    'nelson': ['nelson'],
+    'westport': ['westport'],
+}
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -261,6 +288,149 @@ def fetch_race_results(result_url_or_html, meeting_name, is_html=False):
     return results, total_races
 
 
+# =====================================================
+# HRNZ (NZ Harness Racing) Functions
+# =====================================================
+
+def discover_hrnz_meetings():
+    """Discover today's harness meetings from HRNZ results index."""
+    aus_now = get_australian_date()
+    nz_now = aus_now + timedelta(hours=2)  # NZDT = AEDT + 2
+    month_abbr = nz_now.strftime('%b').lower()
+    today_str = nz_now.strftime('%d %b %Y')  # e.g., "23 Feb 2026"
+    today_dd = nz_now.strftime('%d')
+    today_mm = nz_now.strftime('%m')
+
+    meetings = []
+
+    try:
+        url = f"{HRNZ_BASE}/rlts_{month_abbr}.htm"
+        print(f"  Fetching HRNZ index: {url}")
+        resp = requests.get(url, headers=HEADERS, timeout=10, verify=False)
+        if resp.status_code != 200:
+            print(f"  HRNZ index failed: {resp.status_code}")
+            return meetings
+
+        html = resp.text
+
+        # Find meeting links for today - pattern: <a href="MMDD##rs.htm">Club Name</a>
+        # The date column has format like "23 Feb 2026" or just the date
+        pattern = rf'href=["\']({today_mm}{today_dd}\d{{2}}rs\.htm)["\'][^>]*>([^<]+)</a>'
+        matches = re.findall(pattern, html, re.IGNORECASE)
+
+        if not matches:
+            # Try broader: find all result links with today's MMDD prefix
+            pattern2 = rf'href=["\']({today_mm}{today_dd}\d{{2}}rs\.htm)["\']'
+            links = re.findall(pattern2, html, re.IGNORECASE)
+            # Get club names from surrounding context
+            for link in links:
+                # Find the club name near this link
+                idx = html.find(link)
+                if idx >= 0:
+                    snippet = html[idx:idx+200]
+                    name_match = re.search(r'>([^<]+)</a>', snippet)
+                    if name_match:
+                        matches.append((link, name_match.group(1)))
+
+        for filename, club_name in matches:
+            club_name = club_name.strip()
+            result_url = f"{HRNZ_BASE}/{filename}"
+            norm = re.sub(r'[^a-z]', '', club_name.lower().replace('h.r.c.', '').replace('t.c.', '').replace('r.c.', ''))
+            meetings.append({
+                'name': club_name,
+                'url': result_url,
+                'normalized': norm,
+            })
+            print(f"  HRNZ meeting: {club_name} -> {result_url}")
+
+    except Exception as e:
+        print(f"  HRNZ discovery error: {e}")
+
+    return meetings
+
+
+def match_driver_to_hrnz(meeting_name, hrnz_meetings):
+    """Match a driver challenge meeting name to HRNZ meeting."""
+    name_lower = meeting_name.lower().strip()
+    name_norm = re.sub(r'[^a-z]', '', name_lower)
+
+    # Check aliases first
+    aliases = HRNZ_VENUE_ALIASES.get(name_lower, [name_lower])
+
+    for hm in hrnz_meetings:
+        for alias in aliases:
+            alias_norm = re.sub(r'[^a-z]', '', alias)
+            if alias_norm in hm['normalized'] or hm['normalized'] in alias_norm:
+                return hm
+
+    # Direct normalized match
+    for hm in hrnz_meetings:
+        if name_norm in hm['normalized'] or hm['normalized'] in name_norm:
+            return hm
+
+    return None
+
+
+def fetch_hrnz_results(result_url, meeting_name):
+    """Parse results from HRNZ results page."""
+    results = []
+
+    try:
+        print(f"  Fetching: {result_url}")
+        resp = requests.get(result_url, headers=HEADERS, timeout=15, verify=False)
+        print(f"  Status: {resp.status_code}, Length: {len(resp.text)}")
+        if resp.status_code != 200:
+            return results, 0
+
+        html = resp.text
+
+        # Count races - HRNZ uses <h3> tags with "Race X" or race headers
+        race_headers = re.findall(r'Race\s+(\d+)', html)
+        total_races = max(int(n) for n in race_headers) if race_headers else 0
+
+        # Split by race sections - look for "Race X" headers
+        sections = re.split(r'(?=Race\s+\d+\s)', html)
+
+        for section in sections:
+            race_match = re.match(r'Race\s+(\d+)', section)
+            if not race_match:
+                continue
+
+            race_num = int(race_match.group(1))
+
+            # Extract drivers from result table rows
+            # HRNZ HTML: <td data-label="Placing">1</td> ... <td data-label="Driver"><a ...>Name</a></td>
+            rows = re.findall(
+                r'data-label="Placing"[^>]*>\s*(\d+)\s*</td>.*?data-label="Driver"[^>]*>\s*<a[^>]*>([^<]+)</a>',
+                section, re.DOTALL
+            )
+
+            race_results = []
+            for placing, driver in rows:
+                pos = int(placing)
+                if pos <= 3:
+                    driver = driver.strip()
+                    # Remove junior marker like "(J)"
+                    driver = re.sub(r'\s*\([^)]*\)\s*$', '', driver).strip()
+                    if driver:
+                        race_results.append({
+                            'position': pos,
+                            'jockey': driver,
+                            'name': driver
+                        })
+
+            if race_results:
+                results.append({'race_num': race_num, 'results': race_results[:3]})
+                pos = ', '.join(f"{r['position']}. {r['jockey']}" for r in race_results[:3])
+                print(f"  R{race_num}: {pos}")
+
+    except Exception as e:
+        print(f"  HRNZ parse error: {e}")
+        return results, 0
+
+    return results, total_races
+
+
 def send_results_to_api(meeting_name, race_num, results, actual_total_races=None):
     try:
         payload = {
@@ -329,26 +499,25 @@ def main():
     for m in meetings:
         print(f"  - {m['name']} [{m['type']}] ({m['races_completed']}/{m['total_races']})")
 
-    if driver_meetings:
-        print(f"\n  Note: {len(driver_meetings)} harness meetings skipped (RA = thoroughbred only)")
-
-    if not jockey_meetings:
-        print("No jockey meetings to process")
+    if not jockey_meetings and not driver_meetings:
+        print("No meetings to process")
         return
 
-    # Step 1: Discover today's venues from RA calendars
-    print(f"\nDiscovering today's venues from Racing Australia...")
-    venues, date_key = discover_todays_venues()
-    print(f"Found {len(venues)} venues:")
-    for v in venues:
-        print(f"  - {v['name']} ({v['state']}) [norm: {v['normalized']}]")
-
-    # Step 2: Match and fetch
-    print(f"\n{'='*60}")
-    print("Matching & fetching results...")
-    print(f"{'='*60}")
-
     total_sent = 0
+
+    # =========================================================
+    # THOROUGHBRED / JOCKEY MEETINGS (Racing Australia)
+    # =========================================================
+    if jockey_meetings:
+        print(f"\nDiscovering today's venues from Racing Australia...")
+        venues, date_key = discover_todays_venues()
+        print(f"Found {len(venues)} venues:")
+        for v in venues:
+            print(f"  - {v['name']} ({v['state']}) [norm: {v['normalized']}]")
+
+        print(f"\n{'='*60}")
+        print("Matching & fetching jockey results...")
+        print(f"{'='*60}")
 
     for meeting in jockey_meetings:
         name = meeting['name']
@@ -420,6 +589,63 @@ def main():
                 if res and not res.get('reset'):
                     total_sent += 1
                     actual_total_to_send = None
+
+    # =========================================================
+    # HARNESS / DRIVER MEETINGS (HRNZ - New Zealand)
+    # =========================================================
+    if driver_meetings:
+        print(f"\n{'='*60}")
+        print(f"Processing {len(driver_meetings)} driver meetings (HRNZ)...")
+        print(f"{'='*60}")
+
+        hrnz_meetings = discover_hrnz_meetings()
+        if not hrnz_meetings:
+            print("  No HRNZ meetings found for today")
+        else:
+            for meeting in driver_meetings:
+                name = meeting['name']
+                last_race = meeting['races_completed']
+                tracker_total = meeting['total_races']
+
+                print(f"\n--- {name} ({last_race}/{tracker_total}) [driver] ---")
+
+                matched = match_driver_to_hrnz(name, hrnz_meetings)
+                if not matched:
+                    print(f"  Not found on HRNZ")
+                    continue
+
+                print(f"  Matched: {matched['name']}")
+                results, actual_total = fetch_hrnz_results(matched['url'], name)
+
+                if not results:
+                    print(f"  No results yet")
+                    continue
+
+                actual_total_to_send = None
+                if actual_total > 0 and actual_total != tracker_total:
+                    print(f"  Races: tracker={tracker_total}, actual={actual_total}")
+                    actual_total_to_send = actual_total
+
+                # Send ALL results - backend handles duplicates/corrections
+                reset_needed = False
+                for rd in results:
+                    rn = rd['race_num']
+                    res = send_results_to_api(name, rn, rd['results'], actual_total_to_send)
+                    if res:
+                        if res.get('reset'):
+                            print(f"  Meeting reset for correction - re-sending all results")
+                            reset_needed = True
+                            break
+                        if rn > last_race:
+                            total_sent += 1
+                        actual_total_to_send = None
+
+                if reset_needed:
+                    for rd in results:
+                        res = send_results_to_api(name, rd['race_num'], rd['results'], actual_total_to_send)
+                        if res and not res.get('reset'):
+                            total_sent += 1
+                            actual_total_to_send = None
 
     print(f"\n{'='*60}")
     print(f"Done! Sent {total_sent} new results")
