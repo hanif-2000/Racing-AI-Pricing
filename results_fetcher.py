@@ -212,38 +212,28 @@ def fetch_race_results(result_url_or_html, meeting_name, is_html=False):
                 if idx > 0:
                     section = section[:idx]
 
-            # Debug: show what's in first race section
-            if race_num == 1 and not results:
-                # Check if JockeyLastRuns exists at all
-                jlr_count = section.count('JockeyLastRuns')
-                dls_count = section.count('DriverLastStarts')
-                print(f"  DEBUG R1: section length={len(section)}, JockeyLastRuns={jlr_count}, DriverLastStarts={dls_count}")
-                # Show first jockey link snippet
-                jlr_idx = section.find('JockeyLastRuns')
-                if jlr_idx >= 0:
-                    snippet = section[max(0,jlr_idx-20):jlr_idx+120]
-                    print(f"  DEBUG snippet: {repr(snippet[:200])}")
-                else:
-                    # Show what anchors exist
-                    anchors = re.findall(r'<a\s+[^>]{0,100}>', section[:3000])
-                    print(f"  DEBUG anchors in R1: {anchors[:5]}")
-
-            # Try multiple jockey patterns
+            # Extract jockey/driver names from results
             names = []
 
-            # Pattern 1: JockeyLastRuns with quoted href
-            p1 = r'JockeyLastRuns\.aspx\?[^"\']*["\'][^>]*>\s*([^<]+?)\s*</a>'
+            # Pattern 1: JockeyLastRuns with name inside <span class='Hilite'>
+            # Actual HTML: <a ...JockeyLastRuns...><span class='Hilite'>Name</span></a>
+            p1 = r"JockeyLastRuns[^>]+><span[^>]*>([^<]+)</span>"
             names = re.findall(p1, section)
 
-            # Pattern 2: If pattern 1 fails, try broader match
+            # Pattern 2: JockeyLastRuns with name directly in <a> tag (fallback)
             if not names:
                 p2 = r'JockeyLastRuns[^>]+>\s*([^<]+?)\s*</a>'
                 names = re.findall(p2, section)
 
-            # Pattern 3: DriverLastStarts
+            # Pattern 3: DriverLastStarts with <span> wrapper
             if not names:
-                p3 = r'DriverLastStarts[^>]+>\s*([^<]+?)\s*</a>'
+                p3 = r"DriverLastStarts[^>]+><span[^>]*>([^<]+)</span>"
                 names = re.findall(p3, section)
+
+            # Pattern 4: DriverLastStarts direct (fallback)
+            if not names:
+                p4 = r'DriverLastStarts[^>]+>\s*([^<]+?)\s*</a>'
+                names = re.findall(p4, section)
 
             race_results = []
             seen = set()
