@@ -13,6 +13,7 @@ Strategy:
 import re
 import requests
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote
 
 API_URL = "https://api.jockeydriverchallenge.com"
 RA_BASE = "https://www.racingaustralia.horse"
@@ -54,10 +55,14 @@ def to_title_case(name):
     return ' '.join(word.capitalize() for word in name.split())
 
 
-def discover_todays_venues():
-    """Scrape state calendar pages to find today's venues with result URLs."""
-    aus_now = get_australian_date()
-    date_key = aus_now.strftime('%Y%b%d')
+def build_ra_url(date_key, state, venue_key):
+    """Build properly encoded Racing Australia results URL."""
+    encoded_venue = quote(venue_key, safe=',')
+    return f"{RA_BASE}/FreeFields/Results.aspx?Key={date_key},{state},{encoded_venue}"
+
+
+def discover_venues_for_date(date_key):
+    """Scrape all state calendar pages to find venues for a given date key."""
     venues = []
 
     for state in STATES:
@@ -70,7 +75,6 @@ def discover_todays_venues():
             html = resp.text
 
             # Match href with BOTH single and double quotes
-            # Pattern: href='/FreeFields/Results.aspx?Key=2026Feb23,QLD,Picklebet Park Warwick'
             pattern = rf"""Results\.aspx\?Key={re.escape(date_key)},{re.escape(state)},([^"'&<>]+)"""
             matches = re.findall(pattern, html)
 
@@ -81,10 +85,9 @@ def discover_todays_venues():
                 if ',Trial' in venue_key or ',JumpOut' in venue_key:
                     continue
 
-                # Remove race type suffix
                 venue_name = re.sub(r',(?:Professional|Picnic)$', '', venue_key)
 
-                result_url = f"{RA_BASE}/FreeFields/Results.aspx?Key={date_key},{state},{venue_key}"
+                result_url = build_ra_url(date_key, state, venue_key)
 
                 if venue_name not in seen:
                     seen.add(venue_name)
@@ -93,12 +96,34 @@ def discover_todays_venues():
                         'state': state,
                         'url': result_url,
                         'normalized': normalize_venue(venue_name),
+                        'date_key': date_key,
                     })
 
         except Exception as e:
             print(f"  [Calendar] {state} error: {e}")
 
-    return venues, date_key
+    return venues
+
+
+def discover_todays_venues():
+    """Discover venues for today AND yesterday (for stale meetings)."""
+    aus_now = get_australian_date()
+    today_key = aus_now.strftime('%Y%b%d')
+    yesterday_key = (aus_now - timedelta(days=1)).strftime('%Y%b%d')
+
+    print(f"  Checking today ({today_key}) and yesterday ({yesterday_key})...")
+
+    venues = discover_venues_for_date(today_key)
+    yesterday_venues = discover_venues_for_date(yesterday_key)
+
+    # Add yesterday's venues that aren't already in today's list
+    today_norms = {v['normalized'] for v in venues}
+    for v in yesterday_venues:
+        if v['normalized'] not in today_norms:
+            v['name'] = f"{v['name']} (yesterday)"
+            venues.append(v)
+
+    return venues, today_key
 
 
 def match_meeting_to_venue(meeting_name, venues):
@@ -131,7 +156,7 @@ def try_direct_url(meeting_name, date_key):
     venue = to_title_case(meeting_name)
 
     for state in STATES:
-        url = f"{RA_BASE}/FreeFields/Results.aspx?Key={date_key},{state},{venue}"
+        url = build_ra_url(date_key, state, venue)
         try:
             resp = requests.get(url, headers=HEADERS, timeout=8)
             if resp.status_code != 200:
@@ -161,16 +186,20 @@ def fetch_race_results(result_url_or_html, meeting_name, is_html=False):
         if is_html:
             html = result_url_or_html
         else:
+            print(f"  Fetching: {result_url_or_html}")
             resp = requests.get(result_url_or_html, headers=HEADERS, timeout=15)
+            print(f"  Status: {resp.status_code}, Length: {len(resp.text)}")
             if resp.status_code != 200:
                 return results, 0
             html = resp.text
 
         if 'Results for this meeting are not currently available' in html:
+            print(f"  Page says: results not available")
             return results, 0
 
         total_races = count_total_races(html)
         race_sections = re.split(r'<a\s+name="Race(\d+)"', html)
+        print(f"  Found {total_races} races in HTML, {len(race_sections)//2} sections")
 
         for i in range(1, len(race_sections), 2):
             race_num = int(race_sections[i])
