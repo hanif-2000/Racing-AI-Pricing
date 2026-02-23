@@ -2,7 +2,7 @@
 RESULTS FETCHER - Runs in GitHub Actions
 Fetches race results from Racing Australia (racingaustralia.horse)
 Uses simple HTTP requests - no Playwright/browser needed.
-Uses direct URL construction - no calendar scraping needed.
+Uses direct URL construction with sponsored venue name fallbacks.
 """
 
 import re
@@ -12,11 +12,34 @@ from datetime import datetime, timezone, timedelta
 API_URL = "https://api.jockeydriverchallenge.com"
 RA_BASE = "https://www.racingaustralia.horse"
 
-# Australian Eastern timezone (UTC+11 AEDT / UTC+10 AEST)
-AEST = timezone(timedelta(hours=10))
-AEDT = timezone(timedelta(hours=11))
-
 STATES = ["NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"]
+
+# Common sponsor prefixes used on Racing Australia venue names
+SPONSOR_PREFIXES = [
+    "Picklebet Park ",
+    "Sportsbet-",
+    "Sportsbet ",
+    "bet365 ",
+    "bet365 Park ",
+    "Ladbrokes ",
+    "Southside ",
+    "Picklebet ",
+    "TABtouch ",
+    "TABtouch Park ",
+    "Caulfield Heath",  # special case: Caulfield Heath = Caulfield
+]
+
+# Known venue name mappings (API name -> RA venue names to try)
+VENUE_ALIASES = {
+    "SANDOWN": ["Sportsbet Sandown Hillside", "Sandown", "Sandown Hillside"],
+    "PAKENHAM": ["Southside Pakenham", "Pakenham"],
+    "CRANBOURNE": ["Southside Cranbourne", "Cranbourne"],
+    "MOONEE VALLEY": ["bet365 Moonee Valley", "Moonee Valley"],
+    "GEELONG": ["Ladbrokes Geelong", "Geelong"],
+    "WERRIBEE": ["Picklebet Park Werribee", "Werribee"],
+    "BALLARAT": ["Sportsbet-Ballarat", "Ballarat"],
+    "PINJARRA": ["Pinjarra Scarpside", "Pinjarra"],
+}
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -27,22 +50,38 @@ HEADERS = {
 def get_australian_date():
     """Get current date in Australian Eastern time."""
     now_utc = datetime.now(timezone.utc)
-    now_aest = now_utc + timedelta(hours=11)  # AEDT
-    return now_aest
+    return now_utc + timedelta(hours=11)  # AEDT
 
 
 def to_title_case(name):
-    """Convert API meeting name to title case for RA URL.
-    PORT MACQUARIE -> Port Macquarie
-    EAGLE FARM -> Eagle Farm
-    """
+    """Convert API meeting name to title case for RA URL."""
     return ' '.join(word.capitalize() for word in name.split())
 
 
-def try_results_url(meeting_name, date_key, state):
+def get_venue_names_to_try(meeting_name):
+    """Generate list of venue name variations to try on RA.
+
+    For WARWICK, tries: Warwick, Picklebet Park Warwick, Sportsbet-Warwick, etc.
+    """
+    base = to_title_case(meeting_name)
+    names = [base]
+
+    # Check known aliases first
+    if meeting_name.upper() in VENUE_ALIASES:
+        names = VENUE_ALIASES[meeting_name.upper()] + names
+
+    # Add sponsor prefix variations
+    for prefix in SPONSOR_PREFIXES:
+        sponsored = f"{prefix}{base}"
+        if sponsored not in names:
+            names.append(sponsored)
+
+    return names
+
+
+def try_results_url(venue_name, date_key, state):
     """Try to fetch results from a directly constructed URL."""
-    venue = to_title_case(meeting_name)
-    url = f"{RA_BASE}/FreeFields/Results.aspx?Key={date_key},{state},{venue}"
+    url = f"{RA_BASE}/FreeFields/Results.aspx?Key={date_key},{state},{venue_name}"
 
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
@@ -51,11 +90,9 @@ def try_results_url(meeting_name, date_key, state):
 
         html = resp.text
 
-        # Check if the page has actual race results (not "Results not available")
         if 'Results for this meeting are not currently available' in html:
             return None, url
 
-        # Check if there are any race anchors
         if '<a name="Race1"' not in html and 'Race 1' not in html:
             return None, url
 
@@ -65,14 +102,20 @@ def try_results_url(meeting_name, date_key, state):
         return None, url
 
 
+def count_total_races(html):
+    """Count the actual number of races in the meeting from HTML."""
+    race_nums = re.findall(r'<a\s+name="Race(\d+)"', html)
+    if race_nums:
+        return max(int(n) for n in race_nums)
+    return 0
+
+
 def fetch_race_results_from_html(html, meeting_name):
     """Parse jockey results from Racing Australia results HTML."""
     results = []
 
-    # Find all race sections - they start with <a name="Race1">
     race_sections = re.split(r'<a\s+name="Race(\d+)"', html)
 
-    # race_sections[0] is before first race, then alternating: race_num, content
     for i in range(1, len(race_sections), 2):
         race_num = int(race_sections[i])
         if i + 1 >= len(race_sections):
@@ -80,29 +123,27 @@ def fetch_race_results_from_html(html, meeting_name):
 
         section = race_sections[i + 1]
 
-        # Limit section to just this race
         for marker in ['<a name="Race', 'id="ExoticDiv']:
             idx = section.find(marker)
             if idx > 0:
                 section = section[:idx]
 
-        # Extract jockey names from jockey profile links
-        jockey_pattern = r'JockeyLastRuns\.aspx\?jockeycode=[^"]*"[^>]*>\s*([^<]+?)\s*</a>'
+        # Extract jockey/driver names from profile links
+        jockey_pattern = r'(?:JockeyLastRuns|DriverLastStarts)\.aspx\?\w+=[^"]*"[^>]*>\s*([^<]+?)\s*</a>'
         jockey_matches = re.findall(jockey_pattern, section)
 
         race_results = []
-        seen_jockeys = set()
+        seen = set()
 
-        for jockey_raw in jockey_matches:
-            # Clean jockey name - remove weight/claim info like "(a1.5/51kg)"
-            jockey = re.sub(r'\s*\([^)]*\)\s*$', '', jockey_raw).strip()
+        for raw_name in jockey_matches:
+            name = re.sub(r'\s*\([^)]*\)\s*$', '', raw_name).strip()
 
-            if jockey and jockey not in seen_jockeys:
-                seen_jockeys.add(jockey)
+            if name and name not in seen:
+                seen.add(name)
                 race_results.append({
                     'position': len(race_results) + 1,
-                    'jockey': jockey,
-                    'name': jockey
+                    'jockey': name,
+                    'name': name
                 })
 
             if len(race_results) >= 3:
@@ -119,38 +160,47 @@ def fetch_race_results_from_html(html, meeting_name):
     return results
 
 
-def find_meeting_results(meeting_name):
-    """Try to find results for a meeting by constructing direct URLs.
-    Tries all Australian states with today's date.
-    """
+def find_meeting_results(meeting_name, meeting_type):
+    """Try to find results for a meeting by constructing direct URLs."""
+    if meeting_type == 'driver':
+        print(f"  Skipping harness meeting (not on Racing Australia)")
+        return [], None, 0
+
     aus_now = get_australian_date()
-    date_key = aus_now.strftime('%Y%b%d')  # e.g. "2026Feb23"
+    date_key = aus_now.strftime('%Y%b%d')
 
-    print(f"  Trying date key: {date_key}")
+    venue_names = get_venue_names_to_try(meeting_name)
+    print(f"  Date: {date_key}, trying {len(venue_names)} name variations")
 
-    # Try each state
-    for state in STATES:
-        html, url = try_results_url(meeting_name, date_key, state)
-        if html:
-            print(f"  Found on RA: {state} - {url}")
-            return fetch_race_results_from_html(html, meeting_name), url
+    # Try today with all name variations across all states
+    for venue in venue_names:
+        for state in STATES:
+            html, url = try_results_url(venue, date_key, state)
+            if html:
+                total = count_total_races(html)
+                print(f"  Found: {venue} ({state}) - {total} races")
+                results = fetch_race_results_from_html(html, meeting_name)
+                return results, url, total
 
-    # Also try yesterday (in case meeting was yesterday but still active in tracker)
+    # Try yesterday
     yesterday = aus_now - timedelta(days=1)
-    date_key_yesterday = yesterday.strftime('%Y%b%d')
-    print(f"  Not found for today, trying yesterday: {date_key_yesterday}")
+    date_key_y = yesterday.strftime('%Y%b%d')
+    print(f"  Not found today, trying yesterday ({date_key_y})...")
 
-    for state in STATES:
-        html, url = try_results_url(meeting_name, date_key_yesterday, state)
-        if html:
-            print(f"  Found on RA (yesterday): {state} - {url}")
-            return fetch_race_results_from_html(html, meeting_name), url
+    for venue in venue_names:
+        for state in STATES:
+            html, url = try_results_url(venue, date_key_y, state)
+            if html:
+                total = count_total_races(html)
+                print(f"  Found (yesterday): {venue} ({state}) - {total} races")
+                results = fetch_race_results_from_html(html, meeting_name)
+                return results, url, total
 
-    print(f"  Not found on Racing Australia for any state")
-    return [], None
+    print(f"  Not found on Racing Australia")
+    return [], None, 0
 
 
-def send_results_to_api(meeting_name, race_num, results):
+def send_results_to_api(meeting_name, race_num, results, actual_total_races=None):
     """Send results to production API."""
     try:
         payload = {
@@ -158,6 +208,8 @@ def send_results_to_api(meeting_name, race_num, results):
             'race_num': race_num,
             'results': results
         }
+        if actual_total_races:
+            payload['actual_total_races'] = actual_total_races
 
         response = requests.post(
             f"{API_URL}/api/live-tracker/update/",
@@ -189,6 +241,7 @@ def get_active_meetings():
                 if info.get('races_completed', 0) < info.get('total_races', 8):
                     meetings.append({
                         'name': name,
+                        'type': info.get('type', 'jockey'),
                         'races_completed': info.get('races_completed', 0),
                         'total_races': info.get('total_races', 8)
                     })
@@ -207,7 +260,6 @@ def main():
     print(f"AEDT: {aus_now.isoformat()}")
     print(f"{'='*60}")
 
-    # Step 1: Get active meetings from API
     meetings = get_active_meetings()
     if not meetings:
         print("No active meetings to check")
@@ -215,40 +267,50 @@ def main():
 
     print(f"\nActive meetings ({len(meetings)}):")
     for m in meetings:
-        print(f"  - {m['name']} ({m['races_completed']}/{m['total_races']} completed)")
+        print(f"  - {m['name']} [{m['type']}] ({m['races_completed']}/{m['total_races']})")
 
-    # Step 2: For each meeting, try direct URL to Racing Australia
     print(f"\n{'='*60}")
-    print("Fetching results from Racing Australia...")
+    print("Fetching results...")
     print(f"{'='*60}")
 
     total_sent = 0
 
     for meeting in meetings:
         meeting_name = meeting['name']
+        meeting_type = meeting['type']
         last_race = meeting['races_completed']
+        tracker_total = meeting['total_races']
 
-        print(f"\n--- {meeting_name} (completed: {last_race}) ---")
+        print(f"\n--- {meeting_name} [{meeting_type}] ({last_race}/{tracker_total}) ---")
 
-        results, url = find_meeting_results(meeting_name)
+        results, url, actual_total = find_meeting_results(meeting_name, meeting_type)
 
         if not results:
-            print(f"  No results available")
             continue
+
+        # Determine actual total races
+        actual_total_to_send = None
+        if actual_total > 0 and actual_total != tracker_total:
+            print(f"  Total races mismatch: tracker={tracker_total}, actual={actual_total}")
+            actual_total_to_send = actual_total
 
         print(f"  Found {len(results)} races with results")
 
-        # Send new results to API
         for race_data in results:
             race_num = race_data['race_num']
 
             if race_num > last_race:
-                result = send_results_to_api(meeting_name, race_num, race_data['results'])
+                result = send_results_to_api(
+                    meeting_name, race_num, race_data['results'],
+                    actual_total_races=actual_total_to_send
+                )
                 if result:
                     total_sent += 1
+                    # Only send actual_total once
+                    actual_total_to_send = None
 
     print(f"\n{'='*60}")
-    print(f"Done! Sent {total_sent} new race results to API")
+    print(f"Done! Sent {total_sent} new race results")
     print(f"{'='*60}")
 
 

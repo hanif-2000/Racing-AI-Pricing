@@ -692,6 +692,7 @@ def update_race_result(request):
         meeting = data.get('meeting', '').upper()
         race_num = data.get('race_num', 0)
         results = data.get('results', [])
+        actual_total_races = data.get('actual_total_races', None)
 
         if not meeting or not race_num:
             return JsonResponse({'success': False, 'error': 'meeting and race_num required'}, status=400)
@@ -701,6 +702,18 @@ def update_race_result(request):
                 tracker = LiveTrackerState.objects.select_for_update().get(meeting_name=meeting)
             except LiveTrackerState.DoesNotExist:
                 return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
+
+            # Update total_races if actual count provided and different
+            if actual_total_races and actual_total_races != tracker.total_races:
+                print(f"[Tracker] Updating {meeting} total_races: {tracker.total_races} -> {actual_total_races}")
+                tracker.total_races = actual_total_races
+                # Also update rides_remaining for all participants
+                participants = tracker.get_participants()
+                for name, pdata in participants.items():
+                    races_done = len(pdata.get('positions', []))
+                    pdata['rides_total'] = actual_total_races
+                    pdata['rides_remaining'] = max(0, actual_total_races - races_done)
+                tracker.set_participants(participants)
 
             if race_num <= tracker.races_completed:
                 return JsonResponse({'success': True, 'message': 'Race already processed'})
