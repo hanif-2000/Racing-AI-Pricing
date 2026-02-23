@@ -406,6 +406,13 @@ def main():
                     total_sent += 1
                     actual_total_to_send = None
 
+        # If total_races needs updating but no new results to piggyback on,
+        # re-send the last race result just to deliver the total_races correction
+        if actual_total_to_send and results:
+            last_rd = results[-1]
+            print(f"  Sending total_races correction ({tracker_total} -> {actual_total_to_send})")
+            send_results_to_api(name, last_rd['race_num'], last_rd['results'], actual_total_to_send)
+
     print(f"\n{'='*60}")
     print(f"Done! Sent {total_sent} new results")
     print(f"{'='*60}")
