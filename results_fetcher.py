@@ -2,193 +2,152 @@
 RESULTS FETCHER - Runs in GitHub Actions
 Fetches race results from Racing Australia (racingaustralia.horse)
 Uses simple HTTP requests - no Playwright/browser needed.
+Uses direct URL construction - no calendar scraping needed.
 """
 
 import re
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 API_URL = "https://api.jockeydriverchallenge.com"
 RA_BASE = "https://www.racingaustralia.horse"
 
+# Australian Eastern timezone (UTC+11 AEDT / UTC+10 AEST)
+AEST = timezone(timedelta(hours=10))
+AEDT = timezone(timedelta(hours=11))
+
 STATES = ["NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"]
 
-
-def normalize_name(name):
-    """Normalize meeting name for comparison - strip sponsors, lowercase, alpha only"""
-    # Remove common sponsor prefixes
-    cleaned = re.sub(
-        r'^(bet365|sportsbet|ladbrokes|picklebet|tab)\s*[-\s]*',
-        '', name, flags=re.I
-    )
-    # Remove state suffixes like "NSW", "VIC" etc
-    cleaned = re.sub(r'\s+(NSW|VIC|QLD|SA|WA|TAS|NT|ACT|NZ)\s*$', '', cleaned, flags=re.I)
-    # Remove race type suffixes
-    cleaned = re.sub(r'\s*[-–]\s*(Professional|Trial|Picnic|JumpOut)\s*(\(.*\))?\s*$', '', cleaned, flags=re.I)
-    # Alpha only, lowercase
-    return re.sub(r'[^a-z]', '', cleaned.lower())
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+}
 
 
-def match_meeting_name(api_name, ra_venues):
-    """Match API meeting name to Racing Australia venue name.
+def get_australian_date():
+    """Get current date in Australian Eastern time."""
+    now_utc = datetime.now(timezone.utc)
+    now_aest = now_utc + timedelta(hours=11)  # AEDT
+    return now_aest
 
-    API names are like: PORT MACQUARIE, EAGLE FARM, CAULFIELD
-    RA names are like: Port Macquarie NSW - Professional, Caulfield VIC - Professional
 
-    Returns the matching RA venue dict or None.
+def to_title_case(name):
+    """Convert API meeting name to title case for RA URL.
+    PORT MACQUARIE -> Port Macquarie
+    EAGLE FARM -> Eagle Farm
     """
-    api_norm = normalize_name(api_name)
-
-    # Pass 1: Exact normalized match
-    for venue in ra_venues:
-        if normalize_name(venue['name']) == api_norm:
-            return venue
-
-    # Pass 2: One contains the other
-    for venue in ra_venues:
-        ra_norm = normalize_name(venue['name'])
-        if api_norm in ra_norm or ra_norm in api_norm:
-            if len(api_norm) >= 3 and len(ra_norm) >= 3:
-                return venue
-
-    # Pass 3: All words of shorter name found in longer name
-    api_words = set(re.sub(r'[^a-z\s]', '', api_name.lower()).split())
-    for venue in ra_venues:
-        ra_words = set(re.sub(r'[^a-z\s]', '', venue['name'].lower()).split())
-        # Remove common filler words
-        filler = {'park', 'the', 'and', 'of', 'nsw', 'vic', 'qld', 'sa', 'wa', 'tas', 'nt', 'act'}
-        api_meaningful = api_words - filler
-        ra_meaningful = ra_words - filler
-        if api_meaningful and ra_meaningful:
-            if api_meaningful.issubset(ra_meaningful) or ra_meaningful.issubset(api_meaningful):
-                return venue
-
-    return None
+    return ' '.join(word.capitalize() for word in name.split())
 
 
-def get_todays_meetings():
-    """Scrape Racing Australia calendar to get today's meetings with result URLs."""
-    today = datetime.now()
-    today_str = today.strftime('%a %d-%b')  # e.g. "Mon 23-Feb"
-    today_key = today.strftime('%Y%b%d')  # e.g. "2026Feb23"
-
-    all_venues = []
-
-    for state in STATES:
-        try:
-            url = f"{RA_BASE}/FreeFields/Calendar_Results.aspx?State={state}"
-            resp = requests.get(url, timeout=30)
-            if resp.status_code != 200:
-                print(f"[RA] Failed to fetch {state} calendar: {resp.status_code}")
-                continue
-
-            html = resp.text
-
-            # Find all result links for today
-            # Pattern: href="/FreeFields/Results.aspx?Key=2026Feb23,NSW,VenueName"
-            pattern = rf'href="(/FreeFields/Results\.aspx\?Key={today_key},{state},[^"]+)"[^>]*>([^<]+)</a>'
-            matches = re.findall(pattern, html)
-
-            for href, link_text in matches:
-                # Skip "Available Now" type links - we want venue name links
-                if 'Available' in link_text or 'interim' in link_text:
-                    continue
-
-                # Extract venue name from the key parameter
-                key_match = re.search(r'Key=[^,]+,[^,]+,(.+?)(?:,(?:Trial|Professional|Picnic|JumpOut))?$', href)
-                if key_match:
-                    venue_name = key_match.group(1).replace('%20', ' ')
-                else:
-                    venue_name = link_text.strip()
-
-                # Skip trials and jump outs - we want professional races
-                if ',Trial' in href or ',JumpOut' in href:
-                    continue
-
-                result_url = f"{RA_BASE}{href}"
-
-                # Avoid duplicates
-                if not any(v['url'] == result_url for v in all_venues):
-                    all_venues.append({
-                        'name': venue_name,
-                        'state': state,
-                        'url': result_url,
-                        'link_text': link_text.strip()
-                    })
-
-        except Exception as e:
-            print(f"[RA] Error fetching {state}: {e}")
-
-    return all_venues
-
-
-def fetch_race_results(result_url, meeting_name):
-    """Fetch results for a meeting from Racing Australia."""
-    results = []
+def try_results_url(meeting_name, date_key, state):
+    """Try to fetch results from a directly constructed URL."""
+    venue = to_title_case(meeting_name)
+    url = f"{RA_BASE}/FreeFields/Results.aspx?Key={date_key},{state},{venue}"
 
     try:
-        resp = requests.get(result_url, timeout=30)
+        resp = requests.get(url, headers=HEADERS, timeout=20)
         if resp.status_code != 200:
-            print(f"[RA] Failed to fetch results for {meeting_name}: {resp.status_code}")
-            return results
+            return None, url
 
         html = resp.text
 
-        # Find all race sections - they start with <a name="Race1">
-        race_sections = re.split(r'<a\s+name="Race(\d+)"', html)
+        # Check if the page has actual race results (not "Results not available")
+        if 'Results for this meeting are not currently available' in html:
+            return None, url
 
-        # race_sections[0] is before first race, then alternating: race_num, content
-        for i in range(1, len(race_sections), 2):
-            race_num = int(race_sections[i])
-            if i + 1 >= len(race_sections):
+        # Check if there are any race anchors
+        if '<a name="Race1"' not in html and 'Race 1' not in html:
+            return None, url
+
+        return html, url
+
+    except Exception:
+        return None, url
+
+
+def fetch_race_results_from_html(html, meeting_name):
+    """Parse jockey results from Racing Australia results HTML."""
+    results = []
+
+    # Find all race sections - they start with <a name="Race1">
+    race_sections = re.split(r'<a\s+name="Race(\d+)"', html)
+
+    # race_sections[0] is before first race, then alternating: race_num, content
+    for i in range(1, len(race_sections), 2):
+        race_num = int(race_sections[i])
+        if i + 1 >= len(race_sections):
+            break
+
+        section = race_sections[i + 1]
+
+        # Limit section to just this race
+        for marker in ['<a name="Race', 'id="ExoticDiv']:
+            idx = section.find(marker)
+            if idx > 0:
+                section = section[:idx]
+
+        # Extract jockey names from jockey profile links
+        jockey_pattern = r'JockeyLastRuns\.aspx\?jockeycode=[^"]*"[^>]*>\s*([^<]+?)\s*</a>'
+        jockey_matches = re.findall(jockey_pattern, section)
+
+        race_results = []
+        seen_jockeys = set()
+
+        for jockey_raw in jockey_matches:
+            # Clean jockey name - remove weight/claim info like "(a1.5/51kg)"
+            jockey = re.sub(r'\s*\([^)]*\)\s*$', '', jockey_raw).strip()
+
+            if jockey and jockey not in seen_jockeys:
+                seen_jockeys.add(jockey)
+                race_results.append({
+                    'position': len(race_results) + 1,
+                    'jockey': jockey,
+                    'name': jockey
+                })
+
+            if len(race_results) >= 3:
                 break
 
-            section = race_sections[i + 1]
-
-            # Limit section to just this race (stop at next race or end markers)
-            end_markers = ['<a name="Race', 'id="ExoticDiv']
-            for marker in end_markers:
-                idx = section.find(marker)
-                if idx > 0:
-                    section = section[:idx]
-
-            # Extract results - find jockey links in order of appearance
-            # Pattern: JockeyLastRuns.aspx?jockeycode=...">Jockey Name (weight)</a>
-            jockey_pattern = r'JockeyLastRuns\.aspx\?jockeycode=[^"]*"[^>]*>\s*([^<]+?)\s*</a>'
-            jockey_matches = re.findall(jockey_pattern, section)
-
-            race_results = []
-            seen_jockeys = set()
-
-            for jockey_raw in jockey_matches:
-                # Clean jockey name - remove weight/claim info like "(a1.5/51kg)"
-                jockey = re.sub(r'\s*\([^)]*\)\s*$', '', jockey_raw).strip()
-                # Remove leading "Ms " or "Mr " is fine to keep
-                jockey = jockey.strip()
-
-                if jockey and jockey not in seen_jockeys:
-                    seen_jockeys.add(jockey)
-                    race_results.append({
-                        'position': len(race_results) + 1,
-                        'jockey': jockey,
-                        'name': jockey
-                    })
-
-                if len(race_results) >= 3:
-                    break
-
-            if race_results:
-                results.append({
-                    'race_num': race_num,
-                    'results': race_results
-                })
-                positions = ', '.join(f"{r['position']}. {r['jockey']}" for r in race_results)
-                print(f"  R{race_num}: {positions}")
-
-    except Exception as e:
-        print(f"[RA] Error fetching results for {meeting_name}: {e}")
+        if race_results:
+            results.append({
+                'race_num': race_num,
+                'results': race_results
+            })
+            positions = ', '.join(f"{r['position']}. {r['jockey']}" for r in race_results)
+            print(f"  R{race_num}: {positions}")
 
     return results
+
+
+def find_meeting_results(meeting_name):
+    """Try to find results for a meeting by constructing direct URLs.
+    Tries all Australian states with today's date.
+    """
+    aus_now = get_australian_date()
+    date_key = aus_now.strftime('%Y%b%d')  # e.g. "2026Feb23"
+
+    print(f"  Trying date key: {date_key}")
+
+    # Try each state
+    for state in STATES:
+        html, url = try_results_url(meeting_name, date_key, state)
+        if html:
+            print(f"  Found on RA: {state} - {url}")
+            return fetch_race_results_from_html(html, meeting_name), url
+
+    # Also try yesterday (in case meeting was yesterday but still active in tracker)
+    yesterday = aus_now - timedelta(days=1)
+    date_key_yesterday = yesterday.strftime('%Y%b%d')
+    print(f"  Not found for today, trying yesterday: {date_key_yesterday}")
+
+    for state in STATES:
+        html, url = try_results_url(meeting_name, date_key_yesterday, state)
+        if html:
+            print(f"  Found on RA (yesterday): {state} - {url}")
+            return fetch_race_results_from_html(html, meeting_name), url
+
+    print(f"  Not found on Racing Australia for any state")
+    return [], None
 
 
 def send_results_to_api(meeting_name, race_num, results):
@@ -240,8 +199,12 @@ def get_active_meetings():
 
 
 def main():
+    aus_now = get_australian_date()
+
     print(f"\n{'='*60}")
-    print(f"Results Fetcher - {datetime.now().isoformat()}")
+    print(f"Results Fetcher")
+    print(f"UTC:  {datetime.now(timezone.utc).isoformat()}")
+    print(f"AEDT: {aus_now.isoformat()}")
     print(f"{'='*60}")
 
     # Step 1: Get active meetings from API
@@ -254,21 +217,9 @@ def main():
     for m in meetings:
         print(f"  - {m['name']} ({m['races_completed']}/{m['total_races']} completed)")
 
-    # Step 2: Get today's meetings from Racing Australia
-    print(f"\nFetching today's meetings from Racing Australia...")
-    ra_venues = get_todays_meetings()
-
-    if not ra_venues:
-        print("No meetings found on Racing Australia for today")
-        return
-
-    print(f"\nRacing Australia venues ({len(ra_venues)}):")
-    for v in ra_venues:
-        print(f"  - {v['name']} ({v['state']})")
-
-    # Step 3: Match and fetch results
+    # Step 2: For each meeting, try direct URL to Racing Australia
     print(f"\n{'='*60}")
-    print("Matching meetings and fetching results...")
+    print("Fetching results from Racing Australia...")
     print(f"{'='*60}")
 
     total_sent = 0
@@ -279,23 +230,10 @@ def main():
 
         print(f"\n--- {meeting_name} (completed: {last_race}) ---")
 
-        # Match to Racing Australia venue
-        matched = match_meeting_name(meeting_name, ra_venues)
-
-        if not matched:
-            print(f"  No match found on Racing Australia")
-            print(f"  API name normalized: '{normalize_name(meeting_name)}'")
-            print(f"  RA venues normalized: {[normalize_name(v['name']) for v in ra_venues]}")
-            continue
-
-        print(f"  Matched: {matched['name']} ({matched['state']})")
-        print(f"  URL: {matched['url']}")
-
-        # Fetch results
-        results = fetch_race_results(matched['url'], meeting_name)
+        results, url = find_meeting_results(meeting_name)
 
         if not results:
-            print(f"  No results available yet")
+            print(f"  No results available")
             continue
 
         print(f"  Found {len(results)} races with results")
