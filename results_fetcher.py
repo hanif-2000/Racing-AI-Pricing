@@ -8,7 +8,8 @@ import re
 import requests
 from datetime import datetime
 
-API_URL = "https://api.jockeydriverchallenge.com"
+import os
+API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
 # Map Australian venues to their state
 VENUE_STATE_MAP = {
