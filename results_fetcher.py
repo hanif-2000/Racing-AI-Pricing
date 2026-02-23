@@ -1,342 +1,299 @@
 """
 RESULTS FETCHER - Runs in GitHub Actions
-Fetches race results from Ladbrokes and sends to API
+Fetches race results from Racing Australia (racingaustralia.horse)
+and sends to API. No Playwright needed - uses simple HTTP requests.
 """
 
-import asyncio
 import re
-import os
 import requests
 from datetime import datetime
-from playwright.async_api import async_playwright
 
 API_URL = "https://api.jockeydriverchallenge.com"
 
+# Map Australian venues to their state
+VENUE_STATE_MAP = {
+    # NSW
+    'ROSEHILL': 'NSW', 'ROSEHILL GARDENS': 'NSW', 'RANDWICK': 'NSW',
+    'ROYAL RANDWICK': 'NSW', 'WARWICK FARM': 'NSW', 'CANTERBURY': 'NSW',
+    'NEWCASTLE': 'NSW', 'KEMBLA GRANGE': 'NSW', 'HAWKESBURY': 'NSW',
+    'GOSFORD': 'NSW', 'WYONG': 'NSW', 'PORT MACQUARIE': 'NSW',
+    'GRAFTON': 'NSW', 'COFFS HARBOUR': 'NSW', 'TAMWORTH': 'NSW',
+    'DUBBO': 'NSW', 'BATHURST': 'NSW', 'ORANGE': 'NSW',
+    'MUDGEE': 'NSW', 'SCONE': 'NSW', 'MUSWELLBROOK': 'NSW',
+    'MOREE': 'NSW', 'NARROMINE': 'NSW', 'NOWRA': 'NSW',
+    'QUEANBEYAN': 'NSW', 'WAGGA': 'NSW', 'WAGGA WAGGA': 'NSW',
+    'ALBURY': 'NSW', 'SAPPHIRE COAST': 'NSW', 'TAREE': 'NSW',
+    'GOULBURN': 'NSW', 'GILGANDRA': 'NSW', 'INVERELL': 'NSW',
+    'ARMIDALE': 'NSW', 'BALLINA': 'NSW', 'LISMORE': 'NSW',
+    'CASINO': 'NSW', 'CLARENCE RIVER': 'NSW',
 
-def normalize_name(name):
-    """Normalize meeting name for comparison"""
-    return re.sub(r'[^a-z]', '', name.lower())
+    # VIC
+    'FLEMINGTON': 'VIC', 'CAULFIELD': 'VIC', 'MOONEE VALLEY': 'VIC',
+    'SANDOWN': 'VIC', 'SANDOWN HILLSIDE': 'VIC', 'SANDOWN LAKESIDE': 'VIC',
+    'CRANBOURNE': 'VIC', 'PAKENHAM': 'VIC', 'MORNINGTON': 'VIC',
+    'GEELONG': 'VIC', 'BALLARAT': 'VIC', 'BENDIGO': 'VIC',
+    'WANGARATTA': 'VIC', 'YARRA VALLEY': 'VIC', 'SALE': 'VIC',
+    'KILMORE': 'VIC', 'KYNETON': 'VIC', 'SEYMOUR': 'VIC',
+    'STONY CREEK': 'VIC', 'HAMILTON': 'VIC', 'COLAC': 'VIC',
+    'WARRNAMBOOL': 'VIC', 'STAWELL': 'VIC', 'ARARAT': 'VIC',
+    'BAIRNSDALE': 'VIC', 'TRARALGON': 'VIC', 'MOE': 'VIC',
+    'ECHUCA': 'VIC', 'SWAN HILL': 'VIC', 'MILDURA': 'VIC',
+    'DONALD': 'VIC', 'WODONGA': 'VIC', 'SPORTSBET PAKENHAM': 'VIC',
+
+    # QLD
+    'EAGLE FARM': 'QLD', 'DOOMBEN': 'QLD', 'GOLD COAST': 'QLD',
+    'SUNSHINE COAST': 'QLD', 'IPSWICH': 'QLD', 'TOOWOOMBA': 'QLD',
+    'CALLAGHAN PARK': 'QLD', 'ROCKHAMPTON': 'QLD', 'MACKAY': 'QLD',
+    'TOWNSVILLE': 'QLD', 'CAIRNS': 'QLD', 'KILCOY': 'QLD',
+    'BEAUDESERT': 'QLD', 'GATTON': 'QLD', 'DALBY': 'QLD',
+    'BUNDABERG': 'QLD', 'GLADSTONE': 'QLD', 'EMERALD': 'QLD',
+    'LONGREACH': 'QLD', 'ROMA': 'QLD', 'CHINCHILLA': 'QLD',
+    'AQUIS PARK': 'QLD', 'AQUIS PARK GOLD COAST': 'QLD',
+
+    # SA
+    'MORPHETTVILLE': 'SA', 'MORPHETTVILLE PARKS': 'SA', 'MURRAY BRIDGE': 'SA',
+    'GAWLER': 'SA', 'PORT AUGUSTA': 'SA', 'MOUNT GAMBIER': 'SA',
+    'BALAKLAVA': 'SA', 'STRATHALBYN': 'SA', 'PORT LINCOLN': 'SA',
+    'OAKBANK': 'SA', 'KANGAROO ISLAND': 'SA', 'PENOLA': 'SA',
+    'NARACOORTE': 'SA', 'CEDUNA': 'SA', 'ROXBY DOWNS': 'SA',
+    'CLARE': 'SA', 'BORDERTOWN': 'SA', 'MINLATON': 'SA',
+
+    # WA
+    'ASCOT': 'WA', 'BELMONT': 'WA', 'BELMONT PARK': 'WA',
+    'PINJARRA': 'WA', 'BUNBURY': 'WA', 'NORTHAM': 'WA',
+    'KALGOORLIE': 'WA', 'GERALDTON': 'WA', 'ALBANY': 'WA',
+    'YORK': 'WA', 'NARROGIN': 'WA', 'BROOME': 'WA',
+    'CARNARVON': 'WA', 'LARK HILL': 'WA', 'MT BARKER': 'WA',
+    'ESPERANCE': 'WA', 'BEVERLEY': 'WA',
+
+    # TAS
+    'HOBART': 'TAS', 'LAUNCESTON': 'TAS', 'DEVONPORT': 'TAS',
+    'SPREYTON': 'TAS', 'LONGFORD': 'TAS', 'ELWICK': 'TAS',
+    'MOWBRAY': 'TAS',
+
+    # NT
+    'DARWIN': 'NT', 'ALICE SPRINGS': 'NT', 'FANNIE BAY': 'NT',
+
+    # NZ
+    'WANGANUI': 'NZ', 'OTAKI': 'NZ', 'TRENTHAM': 'NZ',
+    'ELLERSLIE': 'NZ', 'RICCARTON': 'NZ', 'HASTINGS': 'NZ',
+    'TE RAPA': 'NZ', 'RUAKAKA': 'NZ', 'AWAPUNI': 'NZ',
+    'MATAMATA': 'NZ', 'PUKEKOHE': 'NZ', 'NEW PLYMOUTH': 'NZ',
+    'WINGATUI': 'NZ', 'ASHBURTON': 'NZ', 'ADDINGTON': 'NZ',
+    'WAIKATO': 'NZ', 'ROTORUA': 'NZ',
+}
 
 
-def find_meeting_in_lines(lines, meeting_name):
-    """Find meeting index using flexible matching"""
-    target = normalize_name(meeting_name)
+def get_state_for_venue(venue_name):
+    """Get the state code for a venue"""
+    upper = venue_name.upper().strip()
+    if upper in VENUE_STATE_MAP:
+        return VENUE_STATE_MAP[upper]
 
-    # Pass 1: Exact match (case-insensitive)
-    for i, line in enumerate(lines):
-        if line.upper().strip() == meeting_name.upper().strip():
-            return i
-
-    # Pass 2: Normalized match (ignore spaces, hyphens, etc)
-    for i, line in enumerate(lines):
-        if normalize_name(line) == target:
-            return i
-
-    # Pass 3: Line contains meeting name or vice versa
-    for i, line in enumerate(lines):
-        line_upper = line.upper().strip()
-        name_upper = meeting_name.upper().strip()
-        if name_upper in line_upper or line_upper in name_upper:
-            # Skip very short lines that might false-match
-            if len(line.strip()) >= 3:
-                return i
-
-    # Pass 4: Check if meeting name words appear together
-    words = meeting_name.upper().split()
-    if len(words) >= 1:
-        for i, line in enumerate(lines):
-            line_upper = line.upper()
-            if all(w in line_upper for w in words):
-                if len(line.strip()) >= 3:
-                    return i
+    # Try partial match
+    for key, state in VENUE_STATE_MAP.items():
+        if key in upper or upper in key:
+            return state
 
     return None
 
 
-async def fetch_meeting_results(meeting_name: str):
-    """Fetch results for a meeting from Ladbrokes"""
+def format_date_for_ra(dt=None):
+    """Format date as Racing Australia expects: 2026Feb23"""
+    if dt is None:
+        dt = datetime.now()
+    return dt.strftime('%Y%b%d')
+
+
+def normalize_venue_name(name):
+    """Convert API meeting name to Racing Australia venue format"""
+    # Title case: "PORT MACQUARIE" -> "Port Macquarie"
+    return name.strip().title()
+
+
+def fetch_meeting_results_from_ra(meeting_name, state):
+    """Fetch results from racingaustralia.horse"""
+    date_str = format_date_for_ra()
+    venue = normalize_venue_name(meeting_name)
+
+    # Try the direct URL first
+    url = f"https://racingaustralia.horse/FreeFields/Results.aspx?Key={date_str},{state},{venue}"
+    print(f"[ResultsFetcher] Trying: {url}")
+
+    try:
+        resp = requests.get(url, timeout=30, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        })
+
+        if resp.status_code != 200:
+            print(f"[ResultsFetcher] HTTP {resp.status_code} for {venue}")
+            # Try finding the correct venue name from calendar
+            return try_calendar_search(meeting_name, state, date_str)
+
+        html = resp.text
+
+        # Check if we actually got results
+        if 'Race 1' not in html and 'race 1' not in html.lower():
+            print(f"[ResultsFetcher] No race data found for {venue}")
+            return try_calendar_search(meeting_name, state, date_str)
+
+        return parse_results_html(html, meeting_name)
+
+    except Exception as e:
+        print(f"[ResultsFetcher] Error fetching {venue}: {e}")
+        return []
+
+
+def try_calendar_search(meeting_name, state, date_str):
+    """Search the calendar page to find the correct venue URL"""
+    states_to_try = [state] if state else ['NSW', 'VIC', 'QLD', 'SA', 'WA', 'TAS', 'NT']
+
+    target = meeting_name.upper().strip()
+
+    for st in states_to_try:
+        try:
+            cal_url = f"https://racingaustralia.horse/FreeFields/Calendar_Results.aspx?State={st}"
+            resp = requests.get(cal_url, timeout=30, headers={
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+            })
+
+            if resp.status_code != 200:
+                continue
+
+            # Find meeting links matching our venue
+            # Links look like: href='/FreeFields/Results.aspx?Key=2026Feb23,NSW,Port Macquarie'
+            links = re.findall(
+                r"href='(/FreeFields/Results\.aspx\?Key=[^']+)'[^>]*>([^<]+)</a>",
+                resp.text
+            )
+
+            for link_path, link_text in links:
+                link_venue = link_text.strip().upper()
+                # Remove state suffix like "PORT MACQUARIE NSW"
+                link_venue_clean = re.sub(r'\s+(NSW|VIC|QLD|SA|WA|TAS|NT|ACT)\s*(-.*)?$', '', link_venue).strip()
+                # Remove sponsor prefixes like "Sportsbet-"
+                link_venue_clean = re.sub(r'^(SPORTSBET|BET365|LADBROKES|TAB|TABCORP)\s*[-]?\s*', '', link_venue_clean, flags=re.I).strip()
+
+                if (target in link_venue_clean or
+                    link_venue_clean in target or
+                    target.replace(' ', '') == link_venue_clean.replace(' ', '')):
+
+                    # Found matching venue
+                    result_url = f"https://racingaustralia.horse{link_path}"
+                    print(f"[ResultsFetcher] Found via calendar: {link_text.strip()} -> {result_url}")
+
+                    resp2 = requests.get(result_url, timeout=30, headers={
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+                    })
+
+                    if resp2.status_code == 200:
+                        return parse_results_html(resp2.text, meeting_name)
+
+        except Exception as e:
+            print(f"[ResultsFetcher] Calendar search error for {st}: {e}")
+            continue
+
+    print(f"[ResultsFetcher] Could not find {meeting_name} in any calendar")
+    return []
+
+
+def parse_results_html(html, meeting_name):
+    """Parse race results from Racing Australia HTML"""
     results = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    # Find all race sections
+    # Race headers look like: "Race 1 - 12:30PM Race Name (1200m)"
+    race_headers = re.findall(r'Race\s+(\d+)\s*-\s*[\d:APMapm]+\s*(.+?)(?:\s*\(\d+)', html)
+
+    if not race_headers:
+        # Try alternative pattern
+        race_headers = re.findall(r'Race\s+(\d+)', html)
+        race_headers = [(num, '') for num in (race_headers if isinstance(race_headers[0], str) else race_headers)] if race_headers else []
+
+    # Split HTML by race sections
+    race_sections = re.split(r'Race\s+\d+\s*-\s*', html)
+
+    if len(race_sections) <= 1:
+        print(f"[ResultsFetcher] No race sections found for {meeting_name}")
+        return results
+
+    for idx, section in enumerate(race_sections[1:]):
+        if idx >= len(race_headers):
+            break
+
+        race_num = int(race_headers[idx][0]) if isinstance(race_headers[idx], tuple) else int(race_headers[idx])
+
+        # Extract jockey results from the table
+        # Pattern: Finish position + horse + jockey with Hilite span
+        rows = re.findall(
+            r"class='Finish\s+F(\d+)'>\s*(\d+)\s*</span>.*?"
+            r"<td\s+class='jockey'>.*?<span\s+class='Hilite'>([^<]+)</span>",
+            section, re.DOTALL
         )
-        page = await context.new_page()
 
-        try:
-            print(f"[ResultsFetcher] Checking {meeting_name}...")
+        if not rows:
+            # Try alternative patterns
+            # Pattern 2: simpler jockey extraction
+            rows = re.findall(
+                r"<span class='Finish[^']*'>(\d+)</span>.*?"
+                r"class='jockey'[^>]*>.*?>([^<]+)</(?:span|a)>",
+                section, re.DOTALL
+            )
+            if rows:
+                rows = [(pos, pos, jockey) for pos, jockey in rows]
 
-            # Try the results page
-            await page.goto('https://www.ladbrokes.com.au/racing/results', timeout=60000)
-            await asyncio.sleep(5)
+        if not rows:
+            # Pattern 3: any table with positions and jockeys
+            positions = re.findall(r"class='Finish[^']*'>\s*(\d+)\s*</span>", section)
+            jockeys = re.findall(r"class='jockey'[^>]*>.*?<span[^>]*>([^<]+)</span>", section, re.DOTALL)
 
-            # Scroll more aggressively to load all content
-            for _ in range(15):
-                await page.evaluate('window.scrollBy(0, 500)')
-                await asyncio.sleep(0.3)
+            if not jockeys:
+                jockeys = re.findall(r"class='jockey'[^>]*>.*?>([^<]+)</a>", section, re.DOTALL)
 
-            # Scroll back to top
-            await page.evaluate('window.scrollTo(0, 0)')
-            await asyncio.sleep(1)
+            if positions and jockeys:
+                rows = [(p, p, j.strip()) for p, j in zip(positions[:3], jockeys[:3])]
 
-            text = await page.evaluate('document.body.innerText')
-            lines = [l.strip() for l in text.split('\n') if l.strip()]
+        # Get top 3 results
+        top3 = []
+        for row in rows[:3]:
+            position = int(row[1]) if len(row) > 2 else int(row[0])
+            jockey = row[2].strip() if len(row) > 2 else row[1].strip()
 
-            # Debug: Print potential meeting names (lines that look like venue names)
-            potential_meetings = []
-            for line in lines:
-                # Meeting names are typically capitalized words, no numbers
-                if (re.match(r'^[A-Z][a-zA-Z\s\-\.]+$', line.strip()) and
-                    len(line.strip()) >= 3 and
-                    line.strip() not in ['Racing', 'Results', 'Home', 'Sports', 'Live Betting',
-                                         'Promotions', 'Login', 'Join', 'Help', 'Thoroughbred',
-                                         'Harness', 'Greyhound', 'Next To Jump', 'RESULTS',
-                                         'Upcoming', 'Completed', 'All', 'Today', 'Yesterday']):
-                    potential_meetings.append(line.strip())
+            if jockey and jockey not in [r['jockey'] for r in top3]:
+                top3.append({
+                    'position': position,
+                    'jockey': jockey,
+                    'name': jockey
+                })
 
-            if potential_meetings:
-                print(f"[ResultsFetcher] Meetings on page: {potential_meetings[:20]}")
-            else:
-                # Debug: print some lines to understand page structure
-                print(f"[ResultsFetcher] DEBUG - First 40 lines of page:")
-                for idx, line in enumerate(lines[:40]):
-                    print(f"  [{idx}] {line[:100]}")
-
-            # Find meeting using flexible matching
-            meeting_idx = find_meeting_in_lines(lines, meeting_name)
-
-            if meeting_idx is None:
-                print(f"[ResultsFetcher] Meeting {meeting_name} not found on results page")
-
-                # Try alternative: direct race result URL
-                alt_results = await try_direct_race_urls(page, meeting_name)
-                if alt_results:
-                    return alt_results
-
-                return results
-
-            print(f"[ResultsFetcher] Found {meeting_name} at line {meeting_idx}: '{lines[meeting_idx]}'")
-
-            # Find completed races - search more broadly
-            completed_races = []
-            i = meeting_idx + 1
-            state_names = ['VIC', 'NSW', 'QLD', 'SA', 'WA', 'TAS', 'NT', 'NZ', 'HK',
-                          'Victoria', 'New South Wales', 'Queensland', 'South Australia',
-                          'Western Australia', 'Tasmania', 'Northern Territory', 'New Zealand']
-
-            while i < min(meeting_idx + 60, len(lines)):
-                line = lines[i]
-
-                # Stop if we hit another state/section
-                if line.strip() in state_names and i > meeting_idx + 3:
-                    break
-
-                # Stop if we hit another meeting name (all caps, no numbers)
-                if (i > meeting_idx + 3 and
-                    re.match(r'^[A-Z][a-zA-Z\s\-]+$', line.strip()) and
-                    len(line.strip()) >= 4 and
-                    not re.match(r'^R\d', line)):
-                    # Check if this looks like another meeting
-                    if any(normalize_name(line) == normalize_name(pm) for pm in potential_meetings if pm != lines[meeting_idx]):
-                        break
-
-                # Match race numbers in various formats
-                m = re.match(r'^R(\d+)$', line) or re.match(r'^Race\s+(\d+)$', line, re.I)
-                if m and i + 1 < len(lines):
-                    race_num = int(m.group(1))
-                    result_cell = lines[i + 1]
-                    # Check if next line looks like results (numbers with commas/slashes)
-                    if re.match(r'^\d+[/\d]*[\s,]+\d+', result_cell) or 'Paid' in result_cell:
-                        completed_races.append((race_num, result_cell, i))
-
-                i += 1
-
-            print(f"[ResultsFetcher] Found {len(completed_races)} completed races for {meeting_name}")
-
-            # Fetch each race details
-            for race_num, result_cell, line_idx in completed_races:
-                try:
-                    # Try clicking on the race result
-                    await page.goto('https://www.ladbrokes.com.au/racing/results', timeout=30000)
-                    await asyncio.sleep(3)
-
-                    for _ in range(10):
-                        await page.evaluate('window.scrollBy(0, 400)')
-                        await asyncio.sleep(0.2)
-
-                    # Try multiple click strategies
-                    clicked = False
-                    try:
-                        await page.click(f'text="{result_cell}"', timeout=5000)
-                        clicked = True
-                    except Exception:
-                        pass
-
-                    if not clicked:
-                        try:
-                            # Try clicking the race number near the meeting
-                            race_links = await page.query_selector_all(f'text=/R{race_num}/')
-                            for link in race_links:
-                                try:
-                                    await link.click(timeout=3000)
-                                    clicked = True
-                                    break
-                                except Exception:
-                                    continue
-                        except Exception:
-                            pass
-
-                    if not clicked:
-                        print(f"[ResultsFetcher] Could not click R{race_num} for {meeting_name}")
-                        continue
-
-                    await asyncio.sleep(3)
-
-                    text = await page.evaluate('document.body.innerText')
-                    detail_lines = [l.strip() for l in text.split('\n') if l.strip()]
-
-                    race_results = extract_jockey_results(detail_lines)
-
-                    if race_results:
-                        print(f"[ResultsFetcher] R{race_num}: {[r['jockey'] for r in race_results]}")
-                        results.append({
-                            'race_num': race_num,
-                            'results': race_results
-                        })
-                    else:
-                        print(f"[ResultsFetcher] R{race_num}: No jockey results found")
-
-                except Exception as e:
-                    print(f"[ResultsFetcher] R{race_num} error: {e}")
-
-        except Exception as e:
-            print(f"[ResultsFetcher] Error: {e}")
-
-        finally:
-            await browser.close()
+        if top3:
+            print(f"[ResultsFetcher] {meeting_name} R{race_num}: {[r['jockey'] for r in top3]}")
+            results.append({
+                'race_num': race_num,
+                'results': top3
+            })
+        else:
+            # Race might not have finished yet
+            if 'Acceptances' in section or 'Scratchings' in section:
+                print(f"[ResultsFetcher] {meeting_name} R{race_num}: Race not yet completed")
+                break  # Stop checking subsequent races
 
     return results
 
 
-def extract_jockey_results(lines):
-    """Extract jockey names from race result page with multiple patterns"""
-    race_results = []
-    in_results = False
-
-    for i, line in enumerate(lines):
-        # Look for results section markers
-        if line in ['RESULTS', 'Results', 'Result']:
-            in_results = True
-            continue
-        if in_results and line in ['EXOTIC RESULTS', 'FINAL MARGINS', 'Exotic Results',
-                                     'Final Margins', 'Dividends', 'DIVIDENDS']:
-            break
-
-        if in_results:
-            # Pattern 1: "J Name" or "J: Name"
-            if re.match(r'^J[:\s]+[A-Z]', line):
-                jockey = re.sub(r'^J[:\s]+', '', line).strip()
-                jockey = re.sub(r'\s*\([^)]+\)$', '', jockey)
-                if jockey and jockey not in [r['jockey'] for r in race_results]:
-                    race_results.append({
-                        'position': len(race_results) + 1,
-                        'jockey': jockey,
-                        'name': jockey
-                    })
-
-            # Pattern 2: "Jockey: Name"
-            elif re.match(r'^Jockey[:\s]+', line, re.I):
-                jockey = re.sub(r'^Jockey[:\s]+', '', line, flags=re.I).strip()
-                jockey = re.sub(r'\s*\([^)]+\)$', '', jockey)
-                if jockey and jockey not in [r['jockey'] for r in race_results]:
-                    race_results.append({
-                        'position': len(race_results) + 1,
-                        'jockey': jockey,
-                        'name': jockey
-                    })
-
-            # Pattern 3: Position number followed by horse/jockey info
-            # e.g., "1st", "2nd", "3rd" on their own line
-            elif re.match(r'^(1st|2nd|3rd|1ST|2ND|3RD)$', line):
-                # Look ahead for jockey info
-                for j in range(i+1, min(i+5, len(lines))):
-                    if re.match(r'^J[:\s]+[A-Z]', lines[j]):
-                        jockey = re.sub(r'^J[:\s]+', '', lines[j]).strip()
-                        jockey = re.sub(r'\s*\([^)]+\)$', '', jockey)
-                        if jockey and jockey not in [r['jockey'] for r in race_results]:
-                            race_results.append({
-                                'position': len(race_results) + 1,
-                                'jockey': jockey,
-                                'name': jockey
-                            })
-                        break
-
-        if len(race_results) >= 3:
-            break
-
-    return race_results
-
-
-async def try_direct_race_urls(page, meeting_name):
-    """Try accessing race results via direct URL patterns"""
-    results = []
-
-    # Convert meeting name to URL slug
-    slug = meeting_name.lower().replace(' ', '-')
-
-    # Try Ladbrokes race result URL patterns
-    today = datetime.now().strftime('%Y-%m-%d')
-
-    for race_num in range(1, 9):
-        try:
-            url = f'https://www.ladbrokes.com.au/racing/thoroughbred/{slug}/race-{race_num}'
-            print(f"[ResultsFetcher] Trying direct URL: {url}")
-
-            response = await page.goto(url, timeout=15000)
-            if response and response.status == 200:
-                await asyncio.sleep(2)
-
-                text = await page.evaluate('document.body.innerText')
-
-                # Check if this race has results
-                if 'RESULTS' in text.upper() or 'Result' in text:
-                    lines = [l.strip() for l in text.split('\n') if l.strip()]
-                    race_results = extract_jockey_results(lines)
-
-                    if race_results:
-                        print(f"[ResultsFetcher] Direct URL R{race_num}: {[r['jockey'] for r in race_results]}")
-                        results.append({
-                            'race_num': race_num,
-                            'results': race_results
-                        })
-                else:
-                    # Race hasn't completed yet or no results
-                    break
-            else:
-                break
-
-        except Exception as e:
-            print(f"[ResultsFetcher] Direct URL R{race_num} error: {e}")
-            continue
-
-    return results
-
-
-def send_results_to_api(meeting_name: str, race_num: int, results: list):
+def send_results_to_api(meeting_name, race_num, race_results):
     """Send results to production API"""
     try:
         payload = {
             'meeting': meeting_name.upper(),
             'race_num': race_num,
-            'results': results
+            'results': race_results
         }
 
         response = requests.post(
             f"{API_URL}/api/live-tracker/update/",
             json=payload,
-            timeout=30
+            timeout=60
         )
 
         if response.status_code == 200:
@@ -372,7 +329,7 @@ def get_active_meetings():
     return []
 
 
-async def main():
+def main():
     print(f"\n🏇 Results Fetcher Starting - {datetime.now().isoformat()}")
 
     # Get active meetings
@@ -384,16 +341,23 @@ async def main():
 
     print(f"Found {len(meetings)} active meetings: {[m['name'] for m in meetings]}")
 
+    total_sent = 0
+
     for meeting in meetings:
         meeting_name = meeting['name']
         last_race = meeting['races_completed']
 
         print(f"\n--- Checking {meeting_name} (last race: {last_race}) ---")
 
-        results = await fetch_meeting_results(meeting_name)
+        # Get state for this venue
+        state = get_state_for_venue(meeting_name)
+        if not state:
+            print(f"[ResultsFetcher] Unknown state for {meeting_name}, searching all states...")
+
+        # Fetch results from Racing Australia
+        results = fetch_meeting_results_from_ra(meeting_name, state)
 
         # Send new results to API
-        sent_count = 0
         for race_data in results:
             race_num = race_data['race_num']
 
@@ -401,13 +365,10 @@ async def main():
             if race_num > last_race:
                 result = send_results_to_api(meeting_name, race_num, race_data['results'])
                 if result:
-                    sent_count += 1
+                    total_sent += 1
 
-        if sent_count > 0:
-            print(f"[ResultsFetcher] Sent {sent_count} new results for {meeting_name}")
-
-    print(f"\n✅ Results Fetcher Complete - {datetime.now().isoformat()}")
+    print(f"\n✅ Results Fetcher Complete - Sent {total_sent} new results - {datetime.now().isoformat()}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
