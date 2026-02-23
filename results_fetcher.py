@@ -398,20 +398,28 @@ def main():
             print(f"  Races: tracker={tracker_total}, actual={actual_total}")
             actual_total_to_send = actual_total
 
+        # Send ALL results - backend will skip duplicates or detect corrections
+        reset_needed = False
         for rd in results:
             rn = rd['race_num']
-            if rn > last_race:
-                res = send_results_to_api(name, rn, rd['results'], actual_total_to_send)
-                if res:
+            res = send_results_to_api(name, rn, rd['results'], actual_total_to_send)
+            if res:
+                if res.get('reset'):
+                    # Backend detected wrong results and reset the meeting
+                    print(f"  Meeting reset for correction - re-sending all results")
+                    reset_needed = True
+                    break
+                if rn > last_race:
+                    total_sent += 1
+                actual_total_to_send = None
+
+        # If reset was triggered, re-send all results to the now-clean meeting
+        if reset_needed:
+            for rd in results:
+                res = send_results_to_api(name, rd['race_num'], rd['results'], actual_total_to_send)
+                if res and not res.get('reset'):
                     total_sent += 1
                     actual_total_to_send = None
-
-        # If total_races needs updating but no new results to piggyback on,
-        # re-send the last race result just to deliver the total_races correction
-        if actual_total_to_send and results:
-            last_rd = results[-1]
-            print(f"  Sending total_races correction ({tracker_total} -> {actual_total_to_send})")
-            send_results_to_api(name, last_rd['race_num'], last_rd['results'], actual_total_to_send)
 
     print(f"\n{'='*60}")
     print(f"Done! Sent {total_sent} new results")

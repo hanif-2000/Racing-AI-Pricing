@@ -716,7 +716,44 @@ def update_race_result(request):
                 tracker.set_participants(participants)
 
             if race_num <= tracker.races_completed:
-                return JsonResponse({'success': True, 'message': 'Race already processed'})
+                # Check if stored results differ (correction needed)
+                stored_results = tracker.get_race_results()
+                stored_race = None
+                for sr in stored_results:
+                    if sr.get('race') == race_num:
+                        stored_race = sr
+                        break
+
+                needs_correction = False
+                if stored_race:
+                    old_names = {r.get('jockey', r.get('name', '')).lower() for r in stored_race.get('results', [])}
+                    new_names = {r.get('jockey', r.get('name', '')).lower() for r in results}
+                    if old_names != new_names:
+                        needs_correction = True
+                        print(f"[Tracker] CORRECTION for {meeting} R{race_num}: {old_names} -> {new_names}")
+
+                if not needs_correction:
+                    return JsonResponse({'success': True, 'message': 'Race already processed'})
+
+                # Reset meeting to reprocess all races from scratch
+                print(f"[Tracker] Resetting {meeting} for correction...")
+                participants = tracker.get_participants()
+                for name, pdata in participants.items():
+                    pdata['current_points'] = 0
+                    pdata['positions'] = []
+                    pdata['points_history'] = []
+                    pdata['rides_remaining'] = tracker.total_races
+                tracker.set_participants(participants)
+                tracker.races_completed = 0
+                tracker.race_results_data = '[]'
+                tracker.save()
+
+                # Return requesting all results be re-sent
+                return JsonResponse({
+                    'success': True,
+                    'message': 'Correction detected - meeting reset',
+                    'reset': True
+                })
 
             participants = tracker.get_participants()
 
