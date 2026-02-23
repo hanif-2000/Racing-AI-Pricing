@@ -212,8 +212,38 @@ def fetch_race_results(result_url_or_html, meeting_name, is_html=False):
                 if idx > 0:
                     section = section[:idx]
 
-            pattern = r'(?:JockeyLastRuns|DriverLastStarts)\.aspx\?\w+=[^"\']*["\'][^>]*>\s*([^<]+?)\s*</a>'
-            names = re.findall(pattern, section)
+            # Debug: show what's in first race section
+            if race_num == 1 and not results:
+                # Check if JockeyLastRuns exists at all
+                jlr_count = section.count('JockeyLastRuns')
+                dls_count = section.count('DriverLastStarts')
+                print(f"  DEBUG R1: section length={len(section)}, JockeyLastRuns={jlr_count}, DriverLastStarts={dls_count}")
+                # Show first jockey link snippet
+                jlr_idx = section.find('JockeyLastRuns')
+                if jlr_idx >= 0:
+                    snippet = section[max(0,jlr_idx-20):jlr_idx+120]
+                    print(f"  DEBUG snippet: {repr(snippet[:200])}")
+                else:
+                    # Show what anchors exist
+                    anchors = re.findall(r'<a\s+[^>]{0,100}>', section[:3000])
+                    print(f"  DEBUG anchors in R1: {anchors[:5]}")
+
+            # Try multiple jockey patterns
+            names = []
+
+            # Pattern 1: JockeyLastRuns with quoted href
+            p1 = r'JockeyLastRuns\.aspx\?[^"\']*["\'][^>]*>\s*([^<]+?)\s*</a>'
+            names = re.findall(p1, section)
+
+            # Pattern 2: If pattern 1 fails, try broader match
+            if not names:
+                p2 = r'JockeyLastRuns[^>]+>\s*([^<]+?)\s*</a>'
+                names = re.findall(p2, section)
+
+            # Pattern 3: DriverLastStarts
+            if not names:
+                p3 = r'DriverLastStarts[^>]+>\s*([^<]+?)\s*</a>'
+                names = re.findall(p3, section)
 
             race_results = []
             seen = set()
