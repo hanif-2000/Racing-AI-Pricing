@@ -20,7 +20,7 @@ API_URL = 'https://api.jockeydriverchallenge.com/api/receive-scrape/'
 
 MAX_RETRIES = 3
 RETRY_BACKOFF = [2, 4, 8]
-MAX_MEETINGS_PER_SCRAPER = 8
+MAX_MEETINGS_PER_SCRAPER = 12
 BROWSER_TIMEOUT = 45000
 NAVIGATION_TIMEOUT = 60000
 
@@ -150,6 +150,16 @@ class BaseScraper:
     def log(self, msg: str):
         logger.info(f"[{self.name}] {msg}")
 
+    def log_diagnostics(self, lines: List[str], context: str = ""):
+        """Log page diagnostics when scraping returns 0 results"""
+        self.log(f"DIAG ({context}): {len(lines)} lines on page")
+        if lines:
+            preview = lines[:15]
+            for i, l in enumerate(preview):
+                self.log(f"  line {i}: {l[:80]}")
+        else:
+            self.log("  (empty page)")
+
 
 async def with_retry(func, retries: int = MAX_RETRIES, name: str = ""):
     for attempt in range(retries):
@@ -198,10 +208,13 @@ class TABtouchScraper(BaseScraper):
                     self.log("Page appears blocked")
                     return []
 
+                self.log(f"Page loaded: {len(lines)} lines")
                 text = '\n'.join(lines)
                 found = re.findall(r'([A-Za-z ]+) Jockey Challenge 3,2,1 Points', text)
                 found = list(dict.fromkeys([m.strip() for m in found]))
                 self.log(f"Found {len(found)} meetings")
+                if not found:
+                    self.log_diagnostics(lines, "no-meetings")
 
                 for meeting in found[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
@@ -295,8 +308,11 @@ class LadbrokesScraper(BaseScraper):
                     self.log("Page appears blocked")
                     return []
 
+                self.log(f"Page loaded: {len(lines)} lines")
                 horse_meetings = self._find_section(lines, 'Horse Racing', 'Greyhounds')
                 self.log(f"Found {len(horse_meetings)} horse meetings")
+                if not horse_meetings:
+                    self.log_diagnostics(lines, "jockey-no-meetings")
 
                 for meeting in horse_meetings[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
@@ -357,8 +373,11 @@ class LadbrokesScraper(BaseScraper):
                     self.log("Page appears blocked")
                     return []
 
+                self.log(f"Page loaded: {len(lines)} lines")
                 harness = self._find_harness(lines)
                 self.log(f"Found {len(harness)} harness meetings")
+                if not harness:
+                    self.log_diagnostics(lines, "driver-no-meetings")
 
                 for meeting in harness[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
@@ -474,17 +493,23 @@ class ElitebetScraper(BaseScraper):
                     self.log("Page appears blocked")
                     return []
 
+                lines = await self.get_text_lines(page)
+                self.log(f"Page loaded: {len(lines)} lines")
+
                 jt = page.locator('text=Jockey Challenge')
                 if await jt.count() > 0:
                     await jt.click()
                     await random_delay(1.5, 3.0)
                 else:
                     self.log("No Jockey Challenge section found")
+                    self.log_diagnostics(lines, "no-jc-section")
                     return []
 
                 lines = await self.get_text_lines(page)
                 names = self._find_meetings(lines)
                 self.log(f"Found {len(names)} meetings")
+                if not names:
+                    self.log_diagnostics(lines, "no-meetings")
 
                 for name in names[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
@@ -573,8 +598,10 @@ class PointsBetScraper(BaseScraper):
 
                 text = await page.evaluate('document.body.innerText')
                 lines_check = [l.strip() for l in text.split('\n') if l.strip()]
+                self.log(f"Page loaded: {len(lines_check)} lines")
                 if self.is_page_blocked(lines_check):
                     self.log("Page appears blocked")
+                    self.log_diagnostics(lines_check, "jockey-blocked")
                     return []
 
                 names = []
@@ -586,6 +613,8 @@ class PointsBetScraper(BaseScraper):
                             if n and n not in names:
                                 names.append(n)
                 self.log(f"Found {len(names)} meetings")
+                if not names:
+                    self.log_diagnostics(lines_check, "jockey-no-meetings")
 
                 for name in names[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
@@ -640,8 +669,10 @@ class PointsBetScraper(BaseScraper):
 
                 text = await page.evaluate('document.body.innerText')
                 lines_check = [l.strip() for l in text.split('\n') if l.strip()]
+                self.log(f"Page loaded: {len(lines_check)} lines")
                 if self.is_page_blocked(lines_check):
                     self.log("Page appears blocked")
+                    self.log_diagnostics(lines_check, "driver-blocked")
                     return []
 
                 names = []
@@ -653,6 +684,8 @@ class PointsBetScraper(BaseScraper):
                             if n and n not in names:
                                 names.append(n)
                 self.log(f"Found {len(names)} driver meetings")
+                if not names:
+                    self.log_diagnostics(lines_check, "driver-no-meetings")
 
                 for name in names[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
@@ -714,6 +747,187 @@ class PointsBetScraper(BaseScraper):
 
 
 # =====================================================
+# SPORTSBET SCRAPER
+# =====================================================
+
+class SportsbetScraper(BaseScraper):
+    def __init__(self):
+        super().__init__()
+        self.name = "Sportsbet"
+
+    async def scrape_jockey(self) -> List[Dict]:
+        async def _do_scrape():
+            meetings = []
+            try:
+                await self.start_browser()
+                page = await self.new_page()
+                self.log("Starting jockey...")
+
+                await self.safe_goto(page, 'https://www.sportsbet.com.au/horse-racing')
+                await random_delay(1.5, 3.0)
+
+                # Click Extras tab
+                try:
+                    await self.safe_click(page, 'text="Extras"', timeout=5000)
+                    await random_delay(1.0, 2.0)
+                except Exception:
+                    self.log("No Extras tab found, trying page as-is")
+
+                for _ in range(3):
+                    await page.evaluate('window.scrollBy(0, 500)')
+                    await random_delay(0.2, 0.5)
+
+                text = await page.evaluate('document.body.innerText')
+                lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+                if self.is_page_blocked(lines):
+                    self.log("Page appears blocked")
+                    self.log_diagnostics(lines, "jockey-blocked")
+                    return []
+
+                found = re.findall(r'Jockey Challenge - ([A-Za-z ]+)', text)
+                found = list(dict.fromkeys([m.strip() for m in found]))
+                self.log(f"Found {len(found)} jockey meetings")
+
+                if not found:
+                    self.log_diagnostics(lines, "jockey-no-meetings")
+
+                for meeting in found[:MAX_MEETINGS_PER_SCRAPER]:
+                    try:
+                        await self.safe_goto(
+                            page,
+                            'https://www.sportsbet.com.au/horse-racing'
+                        )
+                        await random_delay(0.5, 1.0)
+                        try:
+                            await self.safe_click(page, 'text="Extras"', timeout=3000)
+                            await random_delay(0.5, 1.0)
+                        except Exception:
+                            pass
+
+                        clicked = await self.safe_click(
+                            page,
+                            f'text="Jockey Challenge - {meeting}"',
+                            timeout=5000
+                        )
+                        if not clicked:
+                            continue
+
+                        lines = await self.get_text_lines(page)
+                        jockeys = self._parse(lines)
+                        if jockeys:
+                            meetings.append({
+                                'meeting': meeting.upper(),
+                                'type': 'jockey',
+                                'jockeys': jockeys,
+                                'source': 'sportsbet',
+                                'country': get_country(meeting)
+                            })
+                            self.log(f"✅ {meeting}: {len(jockeys)} jockeys")
+                        else:
+                            self.log(f"⚠️ {meeting}: parsed 0 jockeys")
+                            self.log_diagnostics(lines, f"jockey-{meeting}")
+                    except Exception as e:
+                        self.log(f"⚠️ {meeting}: {str(e)[:50]}")
+                    await random_delay(1.0, 2.5)
+            finally:
+                await self.close_browser()
+            return meetings
+
+        return await with_retry(_do_scrape, name=f"{self.name}-jockey")
+
+    async def scrape_driver(self) -> List[Dict]:
+        async def _do_scrape():
+            meetings = []
+            try:
+                await self.start_browser()
+                page = await self.new_page()
+                self.log("Starting driver...")
+
+                await self.safe_goto(page, 'https://www.sportsbet.com.au/horse-racing')
+                await random_delay(1.5, 3.0)
+
+                try:
+                    await self.safe_click(page, 'text="Extras"', timeout=5000)
+                    await random_delay(1.0, 2.0)
+                except Exception:
+                    self.log("No Extras tab found, trying page as-is")
+
+                for _ in range(5):
+                    await page.evaluate('window.scrollBy(0, 500)')
+                    await random_delay(0.2, 0.5)
+
+                text = await page.evaluate('document.body.innerText')
+                lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+                if self.is_page_blocked(lines):
+                    self.log("Page appears blocked")
+                    self.log_diagnostics(lines, "driver-blocked")
+                    return []
+
+                found = re.findall(r'([A-Za-z ]+) Driver Challenge', text)
+                found = [m.strip() for m in found if 'Harness' not in m]
+                found = list(dict.fromkeys(found))
+                self.log(f"Found {len(found)} driver meetings")
+
+                if not found:
+                    self.log_diagnostics(lines, "driver-no-meetings")
+
+                for meeting in found[:MAX_MEETINGS_PER_SCRAPER]:
+                    try:
+                        clicked = await self.safe_click(
+                            page,
+                            f'text="{meeting} Driver Challenge"',
+                            timeout=5000
+                        )
+                        if not clicked:
+                            continue
+
+                        lines = await self.get_text_lines(page)
+                        drivers = self._parse(lines)
+                        if drivers:
+                            meetings.append({
+                                'meeting': meeting.upper(),
+                                'type': 'driver',
+                                'drivers': drivers,
+                                'source': 'sportsbet',
+                                'country': get_country(meeting)
+                            })
+                            self.log(f"✅ {meeting} driver: {len(drivers)}")
+                        else:
+                            self.log(f"⚠️ {meeting}: parsed 0 drivers")
+                    except Exception as e:
+                        self.log(f"⚠️ {meeting}: {str(e)[:50]}")
+                    await random_delay(1.0, 2.5)
+            finally:
+                await self.close_browser()
+            return meetings
+
+        return await with_retry(_do_scrape, name=f"{self.name}-driver")
+
+    def _parse(self, lines):
+        """Parse odds - name appears 1-3 lines before odds value"""
+        result = []
+        skip = ['Challenge', 'Any Other', 'Back', 'Lay', 'Extras', 'Driver',
+                'Jockey', 'Market', 'Trainer']
+        for i, l in enumerate(lines):
+            if re.match(r'^\d+\.\d{2}$', l):
+                odds = float(l)
+                if 1.01 < odds < 500:
+                    # Look back 1-3 lines for a name
+                    for off in [1, 2, 3]:
+                        if i >= off:
+                            name = lines[i - off]
+                            if (name and ' ' in name and len(name) > 4
+                                    and not any(c.isdigit() for c in name)
+                                    and not any(s.lower() in name.lower() for s in skip)
+                                    and not any(p['name'] == name for p in result)):
+                                result.append({'name': name, 'odds': odds})
+                                break
+        return result
+
+
+# =====================================================
 # MAIN FUNCTIONS
 # =====================================================
 
@@ -735,35 +949,39 @@ async def run_all_scrapers():
     logger.info(f"\n🏇 Starting Scraper at {datetime.now()}")
     start = datetime.now()
 
-    # Batch 1: TABtouch + Ladbrokes jockey + Elitebet
+    # Batch 1: TABtouch + Ladbrokes jockey + Elitebet + Sportsbet jockey
     batch1_results = await run_batch([
         TABtouchScraper().scrape(),
         LadbrokesScraper().scrape_jockey(),
         ElitebetScraper().scrape(),
+        SportsbetScraper().scrape_jockey(),
     ], "Batch 1")
 
     await asyncio.sleep(2)
 
-    # Batch 2: Ladbrokes driver + PointsBet jockey + PointsBet driver
+    # Batch 2: Ladbrokes driver + PointsBet jockey + PointsBet driver + Sportsbet driver
     batch2_results = await run_batch([
         LadbrokesScraper().scrape_driver(),
         PointsBetScraper().scrape_jockey(),
         PointsBetScraper().scrape_driver(),
+        SportsbetScraper().scrape_driver(),
     ], "Batch 2")
 
     jockey, driver = [], []
 
-    # Batch 1: all jockey
+    # Batch 1: all jockey (indices 0,1,2,3)
     for data in batch1_results:
         jockey.extend(data)
 
-    # Batch 2: index 0 = driver, index 1 = jockey, index 2 = driver
+    # Batch 2: index 0 = driver, index 1 = jockey, index 2 = driver, index 3 = driver
     if len(batch2_results) > 0:
         driver.extend(batch2_results[0])
     if len(batch2_results) > 1:
         jockey.extend(batch2_results[1])
     if len(batch2_results) > 2:
         driver.extend(batch2_results[2])
+    if len(batch2_results) > 3:
+        driver.extend(batch2_results[3])
 
     elapsed = int((datetime.now() - start).total_seconds())
     logger.info(f"✅ Done in {elapsed}s! Jockey: {len(jockey)} | Driver: {len(driver)}")

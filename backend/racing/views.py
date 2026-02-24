@@ -193,19 +193,23 @@ def merge_meetings(meetings, participant_key='jockeys'):
     return result
 
 
-def calculate_ai_prices(participants, margin=1.10):
-    """Calculate AI prices using multi-bookmaker consensus with configurable margin.
+def calculate_ai_prices(participants, margin=1.02):
+    """Calculate AI prices using multi-bookmaker consensus.
 
     Algorithm:
     1. Use averaged odds across bookmakers (already merged)
     2. Sum implied probabilities to find overround
     3. Normalize to 100% to get true fair probability
-    4. AI price = fair odds (overround removed)
-    5. Apply margin as minimum edge threshold
-    6. Compare each bookmaker's best odds against AI price
+    4. AI price = fair odds (overround removed) - NO margin multiplier
+    5. Edge = how much best bookmaker odds exceed fair price
+    6. Margin is a VALUE THRESHOLD: value = YES if edge >= threshold
+       (margin 1.02 = 2% threshold, 1.10 = 10% threshold)
     """
     if not participants:
         return participants
+
+    # Convert margin to percentage threshold (1.02 → 2%, 1.10 → 10%)
+    margin_pct = (margin - 1.0) * 100 if margin >= 1.0 else margin
 
     # Step 1: Calculate total implied probability (overround) from averaged odds
     total_prob = sum(1 / p.get('odds', 999) for p in participants if p.get('odds', 0) > 0)
@@ -216,22 +220,22 @@ def calculate_ai_prices(participants, margin=1.10):
         if odds > 0 and total_prob > 0:
             # Step 2: True probability (normalized, overround removed)
             implied_prob = (1 / odds) / total_prob * 100
-            # Step 3: Fair price from true probability
-            ai_price = 100 / implied_prob if implied_prob > 0 else 0
-            # Step 4: Apply margin - require X% edge above fair price
-            ai_price_with_margin = round(ai_price * margin, 2)
-            # Step 5: Edge = how much best bookmaker odds exceed our margin-adjusted price
-            edge = ((best_odds - ai_price_with_margin) / ai_price_with_margin * 100) if ai_price_with_margin > 0 else 0
+            # Step 3: Fair price = true fair odds (NO margin multiplied)
+            fair_price = 100 / implied_prob if implied_prob > 0 else 0
+            # Step 4: AI price = fair price (clean, no inflation)
+            ai_price = round(fair_price, 2)
+            # Step 5: Edge = how much best bookmaker odds exceed fair price
+            edge = ((best_odds - fair_price) / fair_price * 100) if fair_price > 0 else 0
 
             p.update({
                 'tab_odds': best_odds,
                 'avg_odds': odds,
                 'implied_prob': round(implied_prob, 1),
                 'fair_prob': round(implied_prob, 1),
-                'ai_price': round(ai_price_with_margin, 2),
-                'fair_price': round(ai_price, 2),
+                'ai_price': ai_price,
+                'fair_price': ai_price,
                 'edge': round(edge, 1),
-                'value': 'YES' if edge > 0 else 'NO'
+                'value': 'YES' if edge >= margin_pct else 'NO'
             })
         else:
             p.update({
@@ -242,7 +246,7 @@ def calculate_ai_prices(participants, margin=1.10):
     return participants
 
 
-def process_meetings(jockey_meetings, driver_meetings, margin=1.10):
+def process_meetings(jockey_meetings, driver_meetings, margin=1.02):
     """Process meetings: merge bookmakers, calculate AI prices"""
     jockey_value = driver_value = 0
 
@@ -276,7 +280,7 @@ def get_ai_prices(request):
     
     try:
         country = request.GET.get('country', 'ALL').upper()
-        margin = float(request.GET.get('margin', 1.10))
+        margin = float(request.GET.get('margin', 1.02))
         use_db = request.GET.get('persistent', 'false').lower() == 'true'
         
         # Use database if requested or if memory is empty
@@ -339,7 +343,7 @@ def get_jockey_challenges(request):
     else:
         source_data = SCRAPED_DATA
     jockey = copy.deepcopy(source_data.get('jockey_challenges', []))
-    margin = float(request.GET.get('margin', 1.10))
+    margin = float(request.GET.get('margin', 1.02))
     jockey, _, jv, _ = process_meetings(jockey, [], margin)
     return JsonResponse({
         'success': True,
@@ -356,7 +360,7 @@ def get_driver_challenges(request):
     else:
         source_data = SCRAPED_DATA
     driver = copy.deepcopy(source_data.get('driver_challenges', []))
-    margin = float(request.GET.get('margin', 1.10))
+    margin = float(request.GET.get('margin', 1.02))
     _, driver, _, dv = process_meetings([], driver, margin)
     return JsonResponse({
         'success': True,
@@ -572,10 +576,18 @@ def _build_leaderboard(participants, margin=1.30):
     return leaderboard
 
 
-def _recalculate_ai_prices(participants, races_completed, margin=1.30):
-    """Recalculate AI prices based on current standings"""
+def _recalculate_ai_prices(participants, races_completed, margin=1.02):
+    """Recalculate AI prices based on current standings.
+
+    AI price = fair price (no margin multiplier).
+    Margin is used as VALUE threshold only:
+    margin 1.02 = 2% threshold, 1.10 = 10% threshold.
+    """
     if not participants:
         return participants
+
+    # Convert margin to percentage threshold
+    margin_pct = (margin - 1.0) * 100 if margin >= 1.0 else margin
 
     standings = []
     for name, data in participants.items():
@@ -605,12 +617,14 @@ def _recalculate_ai_prices(participants, races_completed, margin=1.30):
 
         if prob > 0:
             fair_price = 100 / prob
-            ai_price = fair_price * margin
+            ai_price = round(fair_price, 2)
         else:
             ai_price = 999
 
-        participants[name]['ai_price'] = round(ai_price, 2)
-        participants[name]['value'] = 'YES' if participants[name].get('starting_odds', 0) > ai_price else 'NO'
+        starting_odds = participants[name].get('starting_odds', 0)
+        edge = ((starting_odds - ai_price) / ai_price * 100) if ai_price > 0 and starting_odds > 0 else 0
+        participants[name]['ai_price'] = ai_price
+        participants[name]['value'] = 'YES' if edge >= margin_pct else 'NO'
 
     return participants
 
