@@ -196,16 +196,18 @@ def merge_meetings(meetings, participant_key='jockeys'):
 def calculate_ai_prices(participants, margin=1.02):
     """Calculate AI prices using proportional overround removal.
 
-    Standard bookmaker pricing model:
+    Improved algorithm:
     1. Calculate total implied probability from averaged odds (includes overround)
-    2. Normalize probabilities to 100% (removes ALL overround proportionally)
-    3. AI price = true fair odds (what the price SHOULD be without margin)
-    4. Edge = how much the best available bookmaker odds exceed fair price
-    5. Value = YES when edge >= margin threshold
+    2. Use MINIMUM assumed overround (5%) when calculated overround is too low
+       - Single bookmaker markets typically have 3-8% overround
+       - With 1 source, calculated overround may be unrealistically low/high
+    3. Normalize probabilities to 100% (removes overround proportionally)
+    4. AI price = true fair odds (what the price SHOULD be without margin)
+    5. Edge = how much the best available bookmaker odds exceed fair price
+    6. Value = YES when edge >= margin threshold
 
-    Key: You need multiple bookmakers to find value. If best_odds at one
-    bookmaker exceeds the fair price derived from the market consensus,
-    that bookmaker is offering value on that selection.
+    Key: Multiple bookmakers give more accurate AI prices. With only 1 source,
+    we apply a standard assumed overround to produce realistic fair prices.
     """
     if not participants:
         return participants
@@ -216,8 +218,21 @@ def calculate_ai_prices(participants, margin=1.02):
     if not valid:
         return participants
 
+    # Check average number of bookmakers across participants
+    avg_books = sum(p.get('num_bookmakers', 1) for p in valid) / len(valid)
+
     # Total implied probability from averaged odds (overround included)
     total_prob = sum(1 / p['odds'] for p in valid)
+    calculated_overround = total_prob - 1.0
+
+    # When we have limited bookmaker data, the calculated overround may not
+    # reflect the true market. Apply a minimum standard overround.
+    # Typical Australian racing challenge markets: 4-8% overround.
+    MIN_OVERROUND = 0.05  # 5% minimum assumed overround
+    if avg_books < 2 and calculated_overround < MIN_OVERROUND:
+        # Single source: use standard overround for better AI prices
+        total_prob = 1.0 + MIN_OVERROUND
+
     overround_pct = round((total_prob - 1.0) * 100, 1)
 
     for p in participants:
@@ -239,6 +254,13 @@ def calculate_ai_prices(participants, margin=1.02):
             # Positive edge = bookmaker offers better than fair value
             edge = ((best_odds - ai_price) / ai_price * 100) if ai_price > 0 else 0
 
+            # With single bookmaker, be more conservative with value calls
+            # Require higher edge when data confidence is low
+            if num_books == 1:
+                required_edge = margin_pct + 2.0  # Extra 2% buffer for single source
+            else:
+                required_edge = margin_pct
+
             p.update({
                 'tab_odds': best_odds,
                 'avg_odds': odds,
@@ -247,7 +269,7 @@ def calculate_ai_prices(participants, margin=1.02):
                 'ai_price': ai_price,
                 'fair_price': fair_price,
                 'edge': round(edge, 1),
-                'value': 'YES' if edge >= margin_pct else 'NO',
+                'value': 'YES' if edge >= required_edge else 'NO',
                 'num_bookmakers': num_books,
                 'overround': overround_pct,
             })

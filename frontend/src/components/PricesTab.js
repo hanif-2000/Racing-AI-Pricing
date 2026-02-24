@@ -59,10 +59,19 @@ const PricesTab = ({ data, meetings, challengeType, country, setCountry }) => {
           };
         }
         
-        // Add odds for this source
-        const odds = p.odds || p.tab_odds;
-        if (odds) {
-          meetingMap[meetingKey].participantsMap[nameKey].odds_by_source[source] = odds;
+        // Use all_odds from backend (already merged per-bookmaker) if available
+        if (p.all_odds && typeof p.all_odds === 'object') {
+          Object.entries(p.all_odds).forEach(([src, srcOdds]) => {
+            if (srcOdds > 0) {
+              meetingMap[meetingKey].participantsMap[nameKey].odds_by_source[src.toLowerCase()] = srcOdds;
+            }
+          });
+        } else {
+          // Fallback: use meeting-level source
+          const odds = p.odds || p.tab_odds;
+          if (odds) {
+            meetingMap[meetingKey].participantsMap[nameKey].odds_by_source[source] = odds;
+          }
         }
         
         // Update AI price if better data available

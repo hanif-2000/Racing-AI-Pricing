@@ -126,15 +126,26 @@ class BaseScraper:
             except Exception as e:
                 self.log(f"Firefox failed: {str(e)[:60]}, falling back to Chromium")
 
+        chromium_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+        ]
+        if LOW_MEMORY:
+            chromium_args.extend([
+                '--single-process',
+                '--disable-extensions',
+                '--disable-background-networking',
+                '--disable-default-apps',
+                '--disable-sync',
+                '--disable-translate',
+                '--no-first-run',
+                '--js-flags=--max-old-space-size=128',
+            ])
         self.browser = await self.playwright.chromium.launch(
             headless=True,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--single-process',
-            ]
+            args=chromium_args
         )
         ua = random.choice(USER_AGENTS)
         self.context = await self.browser.new_context(
@@ -264,15 +275,25 @@ class TABtouchScraper(BaseScraper):
         super().__init__()
         self.name = "TABtouch"
 
-    async def scrape(self) -> List[Dict]:
+    async def _scrape_challenge(self, challenge_type: str) -> List[Dict]:
+        """Scrape either jockey or driver challenge from TABtouch."""
+        if challenge_type == 'jockey':
+            url = 'https://www.tabtouch.com.au/racing/jockey-challenge'
+            label = 'Jockey Challenge'
+            key = 'jockeys'
+        else:
+            url = 'https://www.tabtouch.com.au/racing/driver-challenge'
+            label = 'Driver Challenge'
+            key = 'drivers'
+
         async def _do_scrape():
             meetings = []
             try:
                 await self.start_browser()
                 page = await self.new_page()
-                self.log("Starting...")
+                self.log(f"Starting {challenge_type}...")
 
-                await self.safe_goto(page, 'https://www.tabtouch.com.au/racing/jockey-challenge')
+                await self.safe_goto(page, url)
                 await random_delay(1.5, 3.0)
 
                 for _ in range(3):
@@ -286,40 +307,53 @@ class TABtouchScraper(BaseScraper):
 
                 self.log(f"Page loaded: {len(lines)} lines")
                 text = '\n'.join(lines)
-                found = re.findall(r'([A-Za-z ]+) Jockey Challenge 3,2,1 Points', text)
+                found = re.findall(
+                    rf'([A-Za-z ]+) {label} 3,2,1 Points', text)
                 found = list(dict.fromkeys([m.strip() for m in found]))
-                self.log(f"Found {len(found)} meetings")
+                self.log(f"Found {len(found)} {challenge_type} meetings")
                 if not found:
-                    self.log_diagnostics(lines, "no-meetings")
+                    # Try alternate patterns
+                    found = re.findall(
+                        rf'([A-Za-z ]+) {label}', text)
+                    found = list(dict.fromkeys(
+                        [m.strip() for m in found
+                         if len(m.strip()) > 2 and '3,2,1' not in m]))
+                    if found:
+                        self.log(f"Alt pattern: {len(found)} meetings")
+                    else:
+                        self.log_diagnostics(lines, f"no-{challenge_type}-meetings")
 
                 for meeting in found[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
-                        await self.safe_goto(
-                            page,
-                            'https://www.tabtouch.com.au/racing/jockey-challenge'
-                        )
+                        await self.safe_goto(page, url)
                         await random_delay(1.0, 2.0)
 
+                        # Try both patterns for clicking
                         clicked = await self.safe_click(
                             page,
-                            f'text="{meeting} Jockey Challenge 3,2,1 Points"'
+                            f'text="{meeting} {label} 3,2,1 Points"'
                         )
+                        if not clicked:
+                            clicked = await self.safe_click(
+                                page,
+                                f'text="{meeting} {label}"'
+                            )
                         if not clicked:
                             continue
 
                         lines = await self.get_text_lines(page)
-                        jockeys = self._parse(lines)
-                        if jockeys:
+                        parsed = self._parse(lines)
+                        if parsed:
                             meetings.append({
                                 'meeting': meeting.upper(),
-                                'type': 'jockey',
-                                'jockeys': jockeys,
+                                'type': challenge_type,
+                                key: parsed,
                                 'source': 'tabtouch',
                                 'country': get_country(meeting)
                             })
-                            self.log(f"✅ {meeting}: {len(jockeys)} jockeys")
+                            self.log(f"✅ {meeting}: {len(parsed)} {challenge_type}s")
                         else:
-                            self.log(f"⚠️ {meeting}: parsed 0 jockeys")
+                            self.log(f"⚠️ {meeting}: parsed 0 {challenge_type}s")
                             self.log_diagnostics(lines, f"parse-fail-{meeting}")
                     except Exception as e:
                         self.log(f"⚠️ {meeting}: {str(e)[:50]}")
@@ -328,7 +362,15 @@ class TABtouchScraper(BaseScraper):
                 await self.close_browser()
             return meetings
 
-        return await with_retry(_do_scrape, name=self.name)
+        return await with_retry(_do_scrape, name=f"{self.name}-{challenge_type}")
+
+    async def scrape(self) -> List[Dict]:
+        """Scrape jockey challenges (backward compat)."""
+        return await self._scrape_challenge('jockey')
+
+    async def scrape_driver(self) -> List[Dict]:
+        """Scrape driver challenges (harness racing)."""
+        return await self._scrape_challenge('driver')
 
     def _parse(self, lines: List[str]) -> List[Dict]:
         jockeys = []
@@ -1481,6 +1523,185 @@ class TABScraper(BaseScraper):
             })
         return meetings
 
+    async def scrape_driver(self) -> List[Dict]:
+        """Scrape TAB.com.au Driver Challenge (harness racing)."""
+        async def _do_scrape():
+            meetings = []
+            try:
+                await self.start_browser(use_firefox=True)
+                page = await self.new_page()
+                self.log("Starting driver...")
+
+                # Visit home page for session
+                try:
+                    await self.safe_goto(page, 'https://www.tab.com.au')
+                    await random_delay(3.0, 5.0)
+                    for sel in ['text="Accept"', 'text="OK"', 'text="Close"',
+                                'button:has-text("Accept")', '[aria-label="Close"]']:
+                        try:
+                            el = page.locator(sel).first
+                            if await el.count() > 0:
+                                await el.click(timeout=2000)
+                                await random_delay(0.5, 1.0)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Try URLs that may have driver challenges
+                dc_urls = [
+                    'https://www.tab.com.au/racing/driver-challenge',
+                    'https://www.tab.com.au/sports/betting/Driver%20Challenge/competitions/Driver%20Challenge',
+                    'https://www.tab.com.au/racing/extras',
+                    'https://www.tab.com.au/racing/specials',
+                ]
+                dc_keywords = ['DRVR MstPts', 'Driver Challenge',
+                               'Driver Watch', 'driver challenge']
+                text = ''
+                for url in dc_urls:
+                    try:
+                        await self.safe_goto(page, url)
+                        await random_delay(4.0, 6.0)
+                        try:
+                            await page.wait_for_selector(
+                                'text=/Driver Challenge|DRVR MstPts|Driver Watch/i',
+                                timeout=10000)
+                        except PlaywrightTimeout:
+                            pass
+                        for _ in range(3):
+                            await page.evaluate('window.scrollBy(0, 500)')
+                            await random_delay(0.3, 0.5)
+                        lines = await self.get_text_lines(page)
+                        if self.is_page_blocked(lines):
+                            continue
+                        text = '\n'.join(lines)
+                        if any(kw in text for kw in dc_keywords):
+                            self.log(f"DC content found at: {url}")
+                            break
+                        self.log(f"No DC content at {url} ({len(lines)} lines)")
+                    except Exception as e:
+                        self.log(f"URL failed: {url} - {str(e)[:40]}")
+
+                if not text or not any(kw in text for kw in dc_keywords):
+                    self.log("No driver challenge content found")
+                    return []
+
+                # Parse DRVR MstPts format
+                if 'DRVR MstPts' in text:
+                    meetings = self._parse_driver(text)
+                else:
+                    # Try alt format: "Driver Challenge - MEETING"
+                    meetings = self._parse_driver_alt(text)
+
+                for m in meetings:
+                    name = m['meeting']
+                    count = len(m.get('drivers', []))
+                    self.log(f"✅ {name}: {count} drivers")
+
+            except Exception as e:
+                self.log(f"Error: {str(e)[:60]}")
+            finally:
+                await self.close_browser()
+            return meetings
+
+        return await with_retry(_do_scrape, name=f"{self.name}-driver")
+
+    def _parse_driver(self, text: str) -> List[Dict]:
+        """Parse TAB driver challenge page (DRVR MstPts format)."""
+        meetings = []
+        current = None
+        drivers = []
+        prev = None
+        skip = ['Market', 'SUSP', 'Any Other', 'Bet Slip', 'MENU',
+                'AUDIO', 'Driver Challenge', 'DRVR MstPts']
+
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith('DRVR MstPts '):
+                rem = line.replace('DRVR MstPts ', '')
+                if rem.isupper() and not any(c.isdigit() for c in rem):
+                    if current and drivers:
+                        meetings.append({
+                            'meeting': current,
+                            'type': 'driver',
+                            'drivers': drivers.copy(),
+                            'source': 'tab',
+                            'country': get_country(current)
+                        })
+                    current, drivers, prev = rem, [], None
+                    continue
+            if any(x.lower() in line.lower() for x in skip):
+                prev = None
+                continue
+            try:
+                odds = float(line)
+                if 1.01 < odds < 500 and prev:
+                    drivers.append({'name': prev, 'odds': odds})
+                prev = None
+            except ValueError:
+                if (current and len(line) > 2 and line[0].isupper()
+                        and not line.isupper()
+                        and not any(c.isdigit() for c in line)):
+                    prev = line
+
+        if current and drivers:
+            meetings.append({
+                'meeting': current,
+                'type': 'driver',
+                'drivers': drivers,
+                'source': 'tab',
+                'country': get_country(current)
+            })
+        return meetings
+
+    def _parse_driver_alt(self, text: str) -> List[Dict]:
+        """Alt parser for Driver Challenge - Meeting format."""
+        meetings = []
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        meeting_names = re.findall(
+            r'Driver Challenge\s*[-–]\s*([A-Za-z ]+)', text)
+        if not meeting_names:
+            meeting_names = re.findall(
+                r'([A-Z][A-Z ]+)\s*Driver Challenge', text)
+        meeting_names = list(dict.fromkeys(
+            [m.strip() for m in meeting_names if len(m.strip()) > 2]))
+        if not meeting_names:
+            return []
+        self.log(f"Driver alt parse: {len(meeting_names)} meetings")
+        for meeting in meeting_names[:MAX_MEETINGS_PER_SCRAPER]:
+            drivers = []
+            in_section = False
+            prev = None
+            for line in lines:
+                if meeting.lower() in line.lower() and 'driver' in line.lower():
+                    in_section = True
+                    continue
+                if in_section:
+                    if ('Challenge' in line and meeting.lower() not in line.lower()):
+                        break
+                    try:
+                        odds = float(line)
+                        if 1.01 < odds < 500 and prev:
+                            drivers.append({'name': prev, 'odds': odds})
+                        prev = None
+                    except ValueError:
+                        if (len(line) > 2 and line[0].isupper()
+                                and not line.isupper()
+                                and 'Any Other' not in line
+                                and not any(c.isdigit() for c in line)):
+                            prev = line
+            if drivers:
+                meetings.append({
+                    'meeting': meeting.upper(),
+                    'type': 'driver',
+                    'drivers': drivers,
+                    'source': 'tab',
+                    'country': get_country(meeting)
+                })
+        return meetings
+
     def _parse_alt(self, text: str) -> List[Dict]:
         """Alternate TAB parser for different page format.
         Handles cases where TAB shows 'Jockey Challenge - Meeting' format."""
@@ -2000,6 +2221,8 @@ async def run_all_scrapers():
             (LadbrokesScraper().scrape_jockey, 'jockey'),
             (SportsbetScraper().scrape_jockey, 'jockey'),
             (PointsBetScraper().scrape_jockey, 'jockey'),
+            (TABtouchScraper().scrape_driver, 'driver'),
+            (TABScraper().scrape_driver, 'driver'),
             (LadbrokesScraper().scrape_driver, 'driver'),
             (SportsbetScraper().scrape_driver, 'driver'),
             (PointsBetScraper().scrape_driver, 'driver'),
@@ -2020,6 +2243,8 @@ async def run_all_scrapers():
 
         # Batch 2: Driver + PointsBet jockey
         batch2_results = await run_batch([
+            TABtouchScraper().scrape_driver(),
+            TABScraper().scrape_driver(),
             LadbrokesScraper().scrape_driver(),
             PointsBetScraper().scrape_jockey(),
             PointsBetScraper().scrape_driver(),
@@ -2030,13 +2255,17 @@ async def run_all_scrapers():
         for data in batch1_results:
             jockey.extend(data)
         if len(batch2_results) > 0:
-            driver.extend(batch2_results[0])
+            driver.extend(batch2_results[0])  # TABtouch driver
         if len(batch2_results) > 1:
-            jockey.extend(batch2_results[1])
+            driver.extend(batch2_results[1])  # TAB driver
         if len(batch2_results) > 2:
-            driver.extend(batch2_results[2])
+            driver.extend(batch2_results[2])  # Ladbrokes driver
         if len(batch2_results) > 3:
-            driver.extend(batch2_results[3])
+            jockey.extend(batch2_results[3])  # PointsBet jockey
+        if len(batch2_results) > 4:
+            driver.extend(batch2_results[4])  # PointsBet driver
+        if len(batch2_results) > 5:
+            driver.extend(batch2_results[5])  # Sportsbet driver
 
     elapsed = int((datetime.now() - start).total_seconds())
     logger.info(f"✅ Done in {elapsed}s! Jockey: {len(jockey)} | Driver: {len(driver)}")
