@@ -591,18 +591,37 @@ class PointsBetScraper(BaseScraper):
         await random_delay(2.0, 4.0)
 
         # Scroll to trigger lazy loading
-        for _ in range(3):
-            await page.evaluate('window.scrollBy(0, 500)')
+        for _ in range(5):
+            await page.evaluate('window.scrollBy(0, 800)')
             await random_delay(0.3, 0.5)
 
         text = await page.evaluate('document.body.innerText')
-        lines = [l.strip() for l in text.split('\n') if l.strip()]
-        self.log(f"Page loaded: {len(lines)} lines")
+        initial_lines = [l.strip() for l in text.split('\n') if l.strip()]
+        self.log(f"Page loaded: {len(initial_lines)} lines")
 
-        if self.is_page_blocked(lines):
+        if self.is_page_blocked(initial_lines):
             self.log("Page appears blocked")
-            self.log_diagnostics(lines, "blocked")
+            self.log_diagnostics(initial_lines, "blocked")
             return ''
+
+        # Log initial page content for debugging (ALWAYS - so we can see 811-line page)
+        self.log(f"Initial page first 40 lines:")
+        for i, l in enumerate(initial_lines[:40]):
+            self.log(f"  [{i}]: {l[:120]}")
+        # Search for ANY racing keywords on initial page
+        keywords_found = []
+        for i, l in enumerate(initial_lines):
+            ll = l.lower()
+            if any(kw in ll for kw in ['jockey', 'driver', 'challenge', 'special',
+                                        'harness', 'thoroughbred', 'gallop', 'race',
+                                        'odds', 'win', 'horsham', 'scone', 'kembla']):
+                keywords_found.append((i, l))
+        if keywords_found:
+            self.log(f"Keywords found at {len(keywords_found)} lines:")
+            for i, l in keywords_found[:20]:
+                self.log(f"  KW[{i}]: {l[:120]}")
+        else:
+            self.log("NO racing keywords found in page")
 
         # Check if specials content loaded
         if 'Thoroughbred Specials' in text or 'Harness Specials' in text:
@@ -612,13 +631,20 @@ class PointsBetScraper(BaseScraper):
             self.log("Challenge content found on direct URL")
             return text
 
-        # Try 2: Click through navigation tabs to find specials
-        self.log("Specials not on direct URL, trying nav clicks...")
-        nav_tabs = ['Specials', 'Extras', 'TODAY', 'AU/NZ']
-        for tab in nav_tabs:
-            clicked = await self.safe_click(page, f'text="{tab}"', timeout=3000)
+        # Try 2: Click through ALL visible links/buttons on page
+        self.log("Specials not on direct URL, trying clickable elements...")
+
+        # First try: look for any clickable element with racing-related text
+        racing_selectors = [
+            'text="Specials"', 'text="Extras"', 'text="Jockey"',
+            'text="Challenge"', 'text="Markets"', 'text="More"',
+            'a:has-text("Specials")', 'a:has-text("Jockey")',
+            'button:has-text("Specials")', 'button:has-text("More")',
+        ]
+        for sel in racing_selectors:
+            clicked = await self.safe_click(page, sel, timeout=2000)
             if clicked:
-                self.log(f"Clicked '{tab}', checking content...")
+                self.log(f"Clicked '{sel}', checking content...")
                 await random_delay(1.5, 2.5)
                 for _ in range(3):
                     await page.evaluate('window.scrollBy(0, 500)')
@@ -626,41 +652,40 @@ class PointsBetScraper(BaseScraper):
                 text = await page.evaluate('document.body.innerText')
                 if ('Thoroughbred Specials' in text or 'Harness Specials' in text
                         or 'Jockey Challenge' in text or 'Driver Challenge' in text):
-                    self.log(f"Found specials content after clicking '{tab}'")
+                    self.log(f"Found specials content after clicking '{sel}'")
                     return text
 
-        # Try 3: Different URL paths
-        alt_urls = [
-            'https://pointsbet.com.au/racing/horse-racing',
-            'https://pointsbet.com.au/horse-racing',
-        ]
-        for url in alt_urls:
-            try:
-                await self.safe_goto(page, url)
-                await random_delay(2.0, 3.0)
-                for _ in range(3):
-                    await page.evaluate('window.scrollBy(0, 500)')
-                    await random_delay(0.2, 0.4)
-                text = await page.evaluate('document.body.innerText')
-                if ('Thoroughbred Specials' in text or 'Harness Specials' in text
-                        or 'Jockey Challenge' in text or 'Driver Challenge' in text):
-                    self.log(f"Found specials content at {url}")
-                    return text
-            except Exception as e:
-                self.log(f"Alt URL {url} failed: {str(e)[:40]}")
+        # Try 3: Get all links on page and find specials-related ones
+        try:
+            all_links = await page.evaluate('''() => {
+                return Array.from(document.querySelectorAll('a')).map(a => ({
+                    text: a.innerText.trim().substring(0, 80),
+                    href: a.href
+                })).filter(a => a.text.length > 0).slice(0, 50)
+            }''')
+            self.log(f"Found {len(all_links)} links on page:")
+            for link in all_links[:30]:
+                self.log(f"  LINK: {link.get('text', '')[:60]} -> {link.get('href', '')[:80]}")
+                # Click any link that mentions specials, jockey, challenge
+                link_text = link.get('text', '').lower()
+                link_href = link.get('href', '').lower()
+                if any(kw in link_text or kw in link_href
+                       for kw in ['special', 'jockey', 'challenge', 'extra']):
+                    self.log(f"  >>> Clicking racing link: {link.get('text', '')}")
+                    try:
+                        await page.click(f'text="{link.get("text", "")}"', timeout=3000)
+                        await random_delay(1.5, 2.5)
+                        text = await page.evaluate('document.body.innerText')
+                        if ('Jockey Challenge' in text or 'Driver Challenge' in text
+                                or 'Thoroughbred Specials' in text):
+                            self.log("Found specials content via link click!")
+                            return text
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.log(f"Link enumeration failed: {str(e)[:50]}")
 
-        # Nothing worked - log extended diagnostics
         self.log("Could not find specials content anywhere")
-        lines = [l.strip() for l in text.split('\n') if l.strip()]
-        self.log(f"DIAG (no-specials): {len(lines)} lines on final page")
-        # Show more lines for debugging (30 instead of 15)
-        for i, l in enumerate(lines[:30]):
-            self.log(f"  line {i}: {l[:100]}")
-        # Also search for any jockey/racing keywords
-        for i, l in enumerate(lines):
-            ll = l.lower()
-            if any(kw in ll for kw in ['jockey', 'driver', 'challenge', 'special', 'harness']):
-                self.log(f"  KEYWORD at line {i}: {l[:100]}")
         return text
 
     def _find_meetings(self, text: str, race_type: str) -> List[str]:
