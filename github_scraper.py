@@ -667,6 +667,8 @@ class PointsBetScraper(BaseScraper):
             return {}
 
         meetings = {}
+        # Only AU and NZ meetings (skip international — saves time)
+        au_nz_codes = {'AUS', 'NZL'}
         for href in links:
             match = re.search(
                 rf'/racing/{link_type}/([A-Z]{{2,3}})/([^/]+)/race/',
@@ -674,6 +676,8 @@ class PointsBetScraper(BaseScraper):
             )
             if match:
                 country = match.group(1)
+                if country not in au_nz_codes:
+                    continue
                 raw_name = match.group(2)
                 name = raw_name.replace('%20', ' ')
                 if name not in meetings:
@@ -696,6 +700,11 @@ class PointsBetScraper(BaseScraper):
 
             text = await page.evaluate('document.body.innerText')
             lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+            # Skip 404 pages immediately
+            if any('404' in l or 'PAGE NOT FOUND' in l for l in lines[:5]):
+                self.log("Page is 404 — skipping")
+                return []
 
             # Direct check — challenge text already on page
             if challenge in text:
@@ -1322,44 +1331,79 @@ async def run_batch(scrapers, batch_name: str) -> List:
     return valid
 
 
+async def run_sequential(scrapers_config: List[tuple]) -> tuple:
+    """Run scrapers one at a time (for low-RAM servers like 1GB DO droplet).
+    scrapers_config: list of (scraper_callable, 'jockey'|'driver') tuples."""
+    jockey, driver = [], []
+    for scraper_fn, data_type in scrapers_config:
+        try:
+            logger.info(f"  Running {scraper_fn.__self__.name} ({data_type})...")
+            result = await scraper_fn()
+            if isinstance(result, list):
+                if data_type == 'jockey':
+                    jockey.extend(result)
+                else:
+                    driver.extend(result)
+                logger.info(f"  → Got {len(result)} meetings")
+        except Exception as e:
+            logger.error(f"  → Failed: {str(e)[:60]}")
+        await asyncio.sleep(1)
+    return jockey, driver
+
+
 async def run_all_scrapers():
     logger.info(f"\n🏇 Starting Scraper at {datetime.now()}")
     start = datetime.now()
 
-    # Batch 1: TABtouch + Ladbrokes jockey + Elitebet + Sportsbet jockey + TAB
-    batch1_results = await run_batch([
-        TABtouchScraper().scrape(),
-        LadbrokesScraper().scrape_jockey(),
-        ElitebetScraper().scrape(),
-        SportsbetScraper().scrape_jockey(),
-        TABScraper().scrape(),
-    ], "Batch 1")
+    # Detect mode: sequential for server (LOW_RAM), parallel for GitHub Actions
+    sequential = os.environ.get('SCRAPER_MODE') == 'sequential'
 
-    await asyncio.sleep(2)
+    if sequential:
+        logger.info("📌 Sequential mode (server)")
+        scrapers = [
+            (TABtouchScraper().scrape, 'jockey'),
+            (TABScraper().scrape, 'jockey'),
+            (ElitebetScraper().scrape, 'jockey'),
+            (LadbrokesScraper().scrape_jockey, 'jockey'),
+            (SportsbetScraper().scrape_jockey, 'jockey'),
+            (PointsBetScraper().scrape_jockey, 'jockey'),
+            (LadbrokesScraper().scrape_driver, 'driver'),
+            (SportsbetScraper().scrape_driver, 'driver'),
+            (PointsBetScraper().scrape_driver, 'driver'),
+        ]
+        jockey, driver = await run_sequential(scrapers)
+    else:
+        logger.info("📌 Parallel mode (GitHub Actions)")
+        # Batch 1: Jockey scrapers
+        batch1_results = await run_batch([
+            TABtouchScraper().scrape(),
+            LadbrokesScraper().scrape_jockey(),
+            ElitebetScraper().scrape(),
+            SportsbetScraper().scrape_jockey(),
+            TABScraper().scrape(),
+        ], "Batch 1")
 
-    # Batch 2: Ladbrokes driver + PointsBet jockey + PointsBet driver + Sportsbet driver
-    batch2_results = await run_batch([
-        LadbrokesScraper().scrape_driver(),
-        PointsBetScraper().scrape_jockey(),
-        PointsBetScraper().scrape_driver(),
-        SportsbetScraper().scrape_driver(),
-    ], "Batch 2")
+        await asyncio.sleep(2)
 
-    jockey, driver = [], []
+        # Batch 2: Driver + PointsBet jockey
+        batch2_results = await run_batch([
+            LadbrokesScraper().scrape_driver(),
+            PointsBetScraper().scrape_jockey(),
+            PointsBetScraper().scrape_driver(),
+            SportsbetScraper().scrape_driver(),
+        ], "Batch 2")
 
-    # Batch 1: all jockey (indices 0-4)
-    for data in batch1_results:
-        jockey.extend(data)
-
-    # Batch 2: index 0 = driver, index 1 = jockey, index 2 = driver, index 3 = driver
-    if len(batch2_results) > 0:
-        driver.extend(batch2_results[0])
-    if len(batch2_results) > 1:
-        jockey.extend(batch2_results[1])
-    if len(batch2_results) > 2:
-        driver.extend(batch2_results[2])
-    if len(batch2_results) > 3:
-        driver.extend(batch2_results[3])
+        jockey, driver = [], []
+        for data in batch1_results:
+            jockey.extend(data)
+        if len(batch2_results) > 0:
+            driver.extend(batch2_results[0])
+        if len(batch2_results) > 1:
+            jockey.extend(batch2_results[1])
+        if len(batch2_results) > 2:
+            driver.extend(batch2_results[2])
+        if len(batch2_results) > 3:
+            driver.extend(batch2_results[3])
 
     elapsed = int((datetime.now() - start).total_seconds())
     logger.info(f"✅ Done in {elapsed}s! Jockey: {len(jockey)} | Driver: {len(driver)}")
