@@ -135,54 +135,133 @@ def save_meetings_to_db(data):
 # AI PRICING CALCULATION
 # =====================================================
 
-def calculate_ai_prices(participants, margin=1.30):
-    """Calculate AI prices with configurable margin"""
+def merge_meetings(meetings, participant_key='jockeys'):
+    """Merge duplicate meetings from different bookmakers into one with averaged odds"""
+    merged = {}
+    for m in meetings:
+        name = m['meeting'].upper()
+        source = m.get('source', 'unknown')
+        if name not in merged:
+            merged[name] = {
+                'meeting': name,
+                'type': m.get('type', 'jockey'),
+                'country': m.get('country', 'AU'),
+                'sources': [source],
+                'participants_by_name': {},
+            }
+        else:
+            if source not in merged[name]['sources']:
+                merged[name]['sources'].append(source)
+
+        for p in m.get(participant_key, []):
+            pname = p['name']
+            odds = p.get('odds', 0)
+            if pname not in merged[name]['participants_by_name']:
+                merged[name]['participants_by_name'][pname] = {
+                    'name': pname,
+                    'all_odds': {},
+                }
+            if odds > 0:
+                merged[name]['participants_by_name'][pname]['all_odds'][source] = odds
+
+    result = []
+    for name, data in merged.items():
+        participants = []
+        for pname, pdata in data['participants_by_name'].items():
+            all_odds = pdata['all_odds']
+            if all_odds:
+                avg_odds = round(sum(all_odds.values()) / len(all_odds), 2)
+                best_odds = max(all_odds.values())
+            else:
+                avg_odds = 0
+                best_odds = 0
+            participants.append({
+                'name': pname,
+                'odds': avg_odds,
+                'best_odds': best_odds,
+                'all_odds': all_odds,
+                'num_bookmakers': len(all_odds),
+            })
+        entry = {
+            'meeting': data['meeting'],
+            'type': data['type'],
+            'country': data['country'],
+            'sources': data['sources'],
+            participant_key: participants,
+        }
+        result.append(entry)
+    return result
+
+
+def calculate_ai_prices(participants, margin=1.10):
+    """Calculate AI prices using multi-bookmaker consensus with configurable margin.
+
+    Algorithm:
+    1. Use averaged odds across bookmakers (already merged)
+    2. Sum implied probabilities to find overround
+    3. Normalize to 100% to get true fair probability
+    4. AI price = fair odds (overround removed)
+    5. Apply margin as minimum edge threshold
+    6. Compare each bookmaker's best odds against AI price
+    """
     if not participants:
         return participants
-    
+
+    # Step 1: Calculate total implied probability (overround) from averaged odds
     total_prob = sum(1 / p.get('odds', 999) for p in participants if p.get('odds', 0) > 0)
-    
+
     for p in participants:
-        odds = p.get('odds', 0)
+        odds = p.get('odds', 0)  # averaged odds
+        best_odds = p.get('best_odds', odds)  # best available from any bookmaker
         if odds > 0 and total_prob > 0:
+            # Step 2: True probability (normalized, overround removed)
             implied_prob = (1 / odds) / total_prob * 100
-            fair_prob = implied_prob / margin
-            ai_price = 100 / fair_prob if fair_prob > 0 else 0
-            edge = ((odds - ai_price) / ai_price * 100) if ai_price > 0 else 0
-            
+            # Step 3: Fair price from true probability
+            ai_price = 100 / implied_prob if implied_prob > 0 else 0
+            # Step 4: Apply margin - require X% edge above fair price
+            ai_price_with_margin = round(ai_price * margin, 2)
+            # Step 5: Edge = how much best bookmaker odds exceed our margin-adjusted price
+            edge = ((best_odds - ai_price_with_margin) / ai_price_with_margin * 100) if ai_price_with_margin > 0 else 0
+
             p.update({
-                'tab_odds': odds,
+                'tab_odds': best_odds,
+                'avg_odds': odds,
                 'implied_prob': round(implied_prob, 1),
-                'fair_prob': round(fair_prob, 1),
-                'ai_price': round(ai_price, 2),
+                'fair_prob': round(implied_prob, 1),
+                'ai_price': round(ai_price_with_margin, 2),
+                'fair_price': round(ai_price, 2),
                 'edge': round(edge, 1),
                 'value': 'YES' if edge > 0 else 'NO'
             })
         else:
             p.update({
-                'tab_odds': 0, 'implied_prob': 0, 'fair_prob': 0,
-                'ai_price': 0, 'edge': 0, 'value': 'NO'
+                'tab_odds': 0, 'avg_odds': 0, 'implied_prob': 0, 'fair_prob': 0,
+                'ai_price': 0, 'fair_price': 0, 'edge': 0, 'value': 'NO'
             })
-    
+
     return participants
 
 
-def process_meetings(jockey_meetings, driver_meetings, margin=1.30):
-    """Process meetings and calculate AI prices"""
+def process_meetings(jockey_meetings, driver_meetings, margin=1.10):
+    """Process meetings: merge bookmakers, calculate AI prices"""
     jockey_value = driver_value = 0
-    
+
+    # Merge duplicate meetings from different bookmakers
+    jockey_meetings = merge_meetings(jockey_meetings, 'jockeys')
+    driver_meetings = merge_meetings(driver_meetings, 'drivers')
+
     for m in jockey_meetings:
-        participants = [{'name': j['name'], 'odds': j['odds']} for j in m.get('jockeys', [])]
+        participants = m.get('jockeys', [])
         m['participants'] = calculate_ai_prices(participants, margin)
         m['total_participants'] = len(participants)
         jockey_value += sum(1 for p in m['participants'] if p.get('value') == 'YES')
-    
+
     for m in driver_meetings:
-        participants = [{'name': d['name'], 'odds': d['odds']} for d in m.get('drivers', m.get('jockeys', []))]
+        participants = m.get('drivers', m.get('jockeys', []))
         m['participants'] = calculate_ai_prices(participants, margin)
         m['total_participants'] = len(participants)
         driver_value += sum(1 for p in m['participants'] if p.get('value') == 'YES')
-    
+
     return jockey_meetings, driver_meetings, jockey_value, driver_value
 
 
@@ -197,11 +276,11 @@ def get_ai_prices(request):
     
     try:
         country = request.GET.get('country', 'ALL').upper()
-        margin = float(request.GET.get('margin', 1.30))
+        margin = float(request.GET.get('margin', 1.10))
         use_db = request.GET.get('persistent', 'false').lower() == 'true'
         
         # Use database if requested or if memory is empty
-        if use_db or not SCRAPED_DATA.get('jockey_challenges'):
+        if use_db or (not SCRAPED_DATA.get('jockey_challenges') and not SCRAPED_DATA.get('driver_challenges')):
             source_data = get_scraped_data_from_db()
             source = 'database'
         else:
@@ -255,8 +334,12 @@ def get_ai_prices(request):
 @csrf_exempt
 def get_jockey_challenges(request):
     """Get only jockey challenges"""
-    jockey = copy.deepcopy(SCRAPED_DATA.get('jockey_challenges', []))
-    margin = float(request.GET.get('margin', 1.30))
+    if not SCRAPED_DATA.get('jockey_challenges'):
+        source_data = get_scraped_data_from_db()
+    else:
+        source_data = SCRAPED_DATA
+    jockey = copy.deepcopy(source_data.get('jockey_challenges', []))
+    margin = float(request.GET.get('margin', 1.10))
     jockey, _, jv, _ = process_meetings(jockey, [], margin)
     return JsonResponse({
         'success': True,
@@ -268,8 +351,12 @@ def get_jockey_challenges(request):
 @csrf_exempt
 def get_driver_challenges(request):
     """Get only driver challenges"""
-    driver = copy.deepcopy(SCRAPED_DATA.get('driver_challenges', []))
-    margin = float(request.GET.get('margin', 1.30))
+    if not SCRAPED_DATA.get('driver_challenges'):
+        source_data = get_scraped_data_from_db()
+    else:
+        source_data = SCRAPED_DATA
+    driver = copy.deepcopy(source_data.get('driver_challenges', []))
+    margin = float(request.GET.get('margin', 1.10))
     _, driver, _, dv = process_meetings([], driver, margin)
     return JsonResponse({
         'success': True,
@@ -281,11 +368,15 @@ def get_driver_challenges(request):
 @csrf_exempt
 def get_comparison(request):
     """Get comparison data for all bookmakers"""
+    if not SCRAPED_DATA.get('jockey_challenges') and not SCRAPED_DATA.get('driver_challenges'):
+        source_data = get_scraped_data_from_db()
+    else:
+        source_data = SCRAPED_DATA
     return JsonResponse({
         'success': True,
-        'jockey_challenges': SCRAPED_DATA.get('jockey_challenges', []),
-        'driver_challenges': SCRAPED_DATA.get('driver_challenges', []),
-        'bookmakers': ['tab', 'sportsbet', 'tabtouch', 'ladbrokes', 'elitebet', 'pointsbet']
+        'jockey_challenges': source_data.get('jockey_challenges', []),
+        'driver_challenges': source_data.get('driver_challenges', []),
+        'bookmakers': ['tabtouch', 'ladbrokes', 'elitebet', 'pointsbet']
     })
 
 
@@ -485,42 +576,42 @@ def _recalculate_ai_prices(participants, races_completed, margin=1.30):
     """Recalculate AI prices based on current standings"""
     if not participants:
         return participants
-    
+
     standings = []
     for name, data in participants.items():
         current_points = data.get('current_points', 0)
         rides_remaining = data.get('rides_remaining', 0)
         starting_odds = data.get('starting_odds', 0)
-        
+
         if races_completed > 0:
             avg_points = current_points / races_completed
             estimated_final = current_points + (avg_points * rides_remaining)
         else:
             estimated_final = 1 / starting_odds if starting_odds > 0 else 0
-        
+
         standings.append({
             'name': name,
             'current_points': current_points,
             'estimated_final': estimated_final
         })
-    
+
     standings.sort(key=lambda x: (-x['current_points'], -x['estimated_final']))
-    
+
     total_estimated = sum(s['estimated_final'] for s in standings) or 1
-    
+
     for s in standings:
         name = s['name']
         prob = (s['estimated_final'] / total_estimated) * 100
-        
+
         if prob > 0:
             fair_price = 100 / prob
             ai_price = fair_price * margin
         else:
             ai_price = 999
-        
+
         participants[name]['ai_price'] = round(ai_price, 2)
         participants[name]['value'] = 'YES' if participants[name].get('starting_odds', 0) > ai_price else 'NO'
-    
+
     return participants
 
 

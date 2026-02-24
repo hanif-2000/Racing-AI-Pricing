@@ -102,7 +102,7 @@ class AutoResultsFetcher:
                     meeting_idx = i
                     break
             
-            if not meeting_idx:
+            if meeting_idx is None:
                 result['error'] = f'Meeting {meeting_name} not found in results'
                 return result
             

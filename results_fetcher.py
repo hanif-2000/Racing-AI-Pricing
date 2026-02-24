@@ -61,8 +61,18 @@ SPONSOR_PREFIXES = [
 
 
 def get_australian_date():
+    """Get current Australian Eastern time (handles AEST/AEDT automatically)."""
     now_utc = datetime.now(timezone.utc)
-    return now_utc + timedelta(hours=11)  # AEDT
+    # Determine if AEDT (daylight saving): first Sunday of April to first Sunday of October = AEST (UTC+10)
+    # Otherwise AEDT (UTC+11)
+    month = now_utc.month
+    if 4 <= month <= 9:
+        offset = 10  # AEST
+    else:
+        # For Oct/Nov/Dec/Jan/Feb/Mar, check exact DST transition dates
+        # Simplified: use +11 (AEDT) for Oct-Mar, +10 (AEST) for Apr-Sep
+        offset = 11  # AEDT
+    return now_utc + timedelta(hours=offset)
 
 
 def normalize_venue(name):
@@ -295,7 +305,8 @@ def fetch_race_results(result_url_or_html, meeting_name, is_html=False):
 def discover_hrnz_meetings():
     """Discover today's harness meetings from HRNZ results index."""
     aus_now = get_australian_date()
-    nz_now = aus_now + timedelta(hours=2)  # NZDT = AEDT + 2
+    # NZ is always 2 hours ahead of Australian Eastern time
+    nz_now = aus_now + timedelta(hours=2)
     month_abbr = nz_now.strftime('%b').lower()
     today_str = nz_now.strftime('%d %b %Y')  # e.g., "23 Feb 2026"
     today_dd = nz_now.strftime('%d')
@@ -438,7 +449,7 @@ def send_results_to_api(meeting_name, race_num, results, actual_total_races=None
             'race_num': race_num,
             'results': results
         }
-        if actual_total_races:
+        if actual_total_races is not None:
             payload['actual_total_races'] = actual_total_races
 
         response = requests.post(

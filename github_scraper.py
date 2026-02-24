@@ -42,12 +42,18 @@ USER_AGENTS = [
 # =====================================================
 
 NZ_TRACKS = [
+    # Gallops
     'TE AROHA', 'TRENTHAM', 'ELLERSLIE', 'RICCARTON', 'OTAKI',
     'HASTINGS', 'AWAPUNI', 'WANGANUI', 'ROTORUA', 'TAURANGA',
     'PUKEKOHE', 'RUAKAKA', 'MATAMATA', 'TE RAPA', 'WOODVILLE',
+    'WINGATUI',
+    # Harness
     'ADDINGTON', 'ALEXANDRA PARK', 'CAMBRIDGE', 'FORBURY',
-    'ASCOT PARK', 'MANAWATU', 'GREYMOUTH', 'WINGATUI', 'OAMARU',
-    'TIMARU', 'ASHBURTON', 'RANGIORA', 'FORBURY PARK'
+    'ASCOT PARK', 'MANAWATU', 'GREYMOUTH', 'OAMARU',
+    'TIMARU', 'ASHBURTON', 'RANGIORA', 'FORBURY PARK',
+    'WINTON', 'GORE', 'WYNDHAM', 'INVERCARGILL',
+    'BANKS PENINSULA', 'METHVEN', 'CROMWELL', 'KAIKOURA',
+    'GERALDINE', 'REEFTON', 'NELSON', 'WESTPORT',
 ]
 
 
@@ -56,7 +62,7 @@ def get_country(track_name: str) -> str:
     if ' NZ' in track or '-NZ' in track or track.endswith('NZ'):
         return 'NZ'
     for nz in NZ_TRACKS:
-        if nz in track or track in nz:
+        if nz == track or nz in track:
             return 'NZ'
     return 'AU'
 
@@ -354,7 +360,7 @@ class LadbrokesScraper(BaseScraper):
                 harness = self._find_harness(lines)
                 self.log(f"Found {len(harness)} harness meetings")
 
-                for meeting in harness[:5]:
+                for meeting in harness[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
                         await self.safe_goto(
                             page,
@@ -397,13 +403,13 @@ class LadbrokesScraper(BaseScraper):
     def _find_section(self, lines, start, end):
         s_idx = e_idx = None
         for i, l in enumerate(lines):
-            if l == start and i > 60:
+            if l == start and i > 30:
                 s_idx = i
-            elif l == end and s_idx:
+            elif l == end and s_idx is not None:
                 e_idx = i
                 break
         result = []
-        if s_idx and e_idx:
+        if s_idx is not None and e_idx is not None:
             for i in range(s_idx + 1, e_idx):
                 if i + 1 < len(lines) and lines[i + 1] == 'keyboard_arrow_down':
                     if (lines[i] and len(lines[i]) > 2
@@ -414,16 +420,16 @@ class LadbrokesScraper(BaseScraper):
     def _find_harness(self, lines):
         start = None
         for i, l in enumerate(lines):
-            if l == 'Harness Racing' and i > 60:
+            if l == 'Harness Racing' and i > 30:
                 start = i
                 break
         result = []
-        if start:
-            for i in range(start + 1, min(start + 30, len(lines))):
+        if start is not None:
+            for i in range(start + 1, min(start + 80, len(lines))):
                 if i + 1 < len(lines) and lines[i + 1] == 'keyboard_arrow_down':
                     if lines[i] and len(lines[i]) > 2:
                         result.append(lines[i])
-                if '24/7' in lines[i] or 'Responsible' in lines[i]:
+                if '24/7' in lines[i] or 'Responsible' in lines[i] or 'Greyhounds' in lines[i]:
                     break
         return result
 
@@ -480,7 +486,7 @@ class ElitebetScraper(BaseScraper):
                 names = self._find_meetings(lines)
                 self.log(f"Found {len(names)} meetings")
 
-                for name in names[:5]:
+                for name in names[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
                         elem = page.locator(f'text={name}').first
                         if await elem.count() > 0:
@@ -581,7 +587,7 @@ class PointsBetScraper(BaseScraper):
                                 names.append(n)
                 self.log(f"Found {len(names)} meetings")
 
-                for name in names[:5]:
+                for name in names[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
                         await self.safe_goto(
                             page,
@@ -648,7 +654,7 @@ class PointsBetScraper(BaseScraper):
                                 names.append(n)
                 self.log(f"Found {len(names)} driver meetings")
 
-                for name in names[:5]:
+                for name in names[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
                         await self.safe_goto(
                             page,
@@ -701,7 +707,8 @@ class PointsBetScraper(BaseScraper):
                         name = lines[i - 1]
                         if (name and len(name) > 2
                                 and not re.match(r'^\d', name)
-                                and 'see all' not in name.lower()):
+                                and 'see all' not in name.lower()
+                                and not any(p['name'] == name for p in result)):
                             result.append({'name': name, 'odds': odds})
         return result
 
@@ -758,7 +765,7 @@ async def run_all_scrapers():
     if len(batch2_results) > 2:
         driver.extend(batch2_results[2])
 
-    elapsed = (datetime.now() - start).seconds
+    elapsed = int((datetime.now() - start).total_seconds())
     logger.info(f"✅ Done in {elapsed}s! Jockey: {len(jockey)} | Driver: {len(driver)}")
 
     return {
@@ -792,7 +799,7 @@ async def send_to_api(data, retries: int = 3):
             logger.error(f"❌ API attempt {attempt + 1} failed: {str(e)[:60]}")
 
         if attempt < retries - 1:
-            backoff = RETRY_BACKOFF[attempt]
+            backoff = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
             logger.info(f"Retrying API in {backoff}s...")
             await asyncio.sleep(backoff)
 
