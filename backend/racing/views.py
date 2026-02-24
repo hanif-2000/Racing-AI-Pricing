@@ -194,46 +194,65 @@ def merge_meetings(meetings, participant_key='jockeys'):
 
 
 def calculate_ai_prices(participants, margin=1.02):
-    """Calculate AI prices using multi-bookmaker consensus.
+    """Calculate AI prices using confidence-based overround removal.
+
+    Key insight: with few bookmakers, AI prices stay CLOSE to market odds.
+    With many bookmakers, AI prices move toward true fair value.
+    Value appears when one bookmaker offers better odds than the consensus.
 
     Algorithm:
-    1. Use averaged odds across bookmakers (already merged)
-    2. Sum implied probabilities to find overround
-    3. Normalize to 100% to get true fair probability
-    4. AI price = fair odds (overround removed) - NO margin multiplier
-    5. Edge = how much best bookmaker odds exceed fair price
-    6. Margin is a VALUE THRESHOLD: value = YES if edge >= threshold
-       (margin 1.02 = 2% threshold, 1.10 = 10% threshold)
+    1. Calculate market overround from averaged odds
+    2. Remove a PORTION of overround based on confidence (num bookmakers)
+       - 1 bookmaker:  remove 45% of overround (AI close to market)
+       - 2 bookmakers: remove 60% (moderate adjustment)
+       - 3 bookmakers: remove 75% (strong adjustment)
+       - 4+ bookmakers: remove 90% (near-fair price)
+    3. AI price = odds adjusted by partial overround removal
+    4. Edge = how much best bookmaker odds exceed AI price
+    5. Value = YES when edge >= margin threshold
     """
     if not participants:
         return participants
 
-    # Convert margin to percentage threshold (1.02 → 2%, 1.10 → 10%)
     margin_pct = (margin - 1.0) * 100 if margin >= 1.0 else margin
 
-    # Step 1: Calculate total implied probability (overround) from averaged odds
-    total_prob = sum(1 / p.get('odds', 999) for p in participants if p.get('odds', 0) > 0)
+    valid = [p for p in participants if p.get('odds', 0) > 0]
+    if not valid:
+        return participants
+
+    # Total implied probability (overround)
+    total_prob = sum(1 / p['odds'] for p in valid)
+    overround = max(total_prob - 1.0, 0)
 
     for p in participants:
-        odds = p.get('odds', 0)  # averaged odds
-        best_odds = p.get('best_odds', odds)  # best available from any bookmaker
+        odds = p.get('odds', 0)
+        best_odds = p.get('best_odds', odds)
+        num_books = p.get('num_bookmakers', 1)
+
         if odds > 0 and total_prob > 0:
-            # Step 2: True probability (normalized, overround removed)
-            implied_prob = (1 / odds) / total_prob * 100
-            # Step 3: Fair price = true fair odds (NO margin multiplied)
-            fair_price = 100 / implied_prob if implied_prob > 0 else 0
-            # Step 4: AI price = fair price (clean, no inflation)
-            ai_price = round(fair_price, 2)
-            # Step 5: Edge = how much best bookmaker odds exceed fair price
-            edge = ((best_odds - fair_price) / fair_price * 100) if fair_price > 0 else 0
+            raw_prob = 1 / odds
+
+            # Fair probability (full overround removed) — for reference
+            fair_prob = (raw_prob / total_prob) * 100
+            fair_price = round(100 / fair_prob, 2) if fair_prob > 0 else 0
+
+            # Confidence-based partial overround removal
+            # More bookmakers = more confident in removing overround
+            removal = min(0.30 + 0.20 * num_books, 0.90)
+            adjusted_total = 1 + overround * (1 - removal)
+            ai_prob = (raw_prob / adjusted_total) * 100 if adjusted_total > 0 else 0
+            ai_price = round(100 / ai_prob, 2) if ai_prob > 0 else 0
+
+            # Edge: best available odds vs AI price
+            edge = ((best_odds - ai_price) / ai_price * 100) if ai_price > 0 else 0
 
             p.update({
                 'tab_odds': best_odds,
                 'avg_odds': odds,
-                'implied_prob': round(implied_prob, 1),
-                'fair_prob': round(implied_prob, 1),
+                'implied_prob': round(fair_prob, 1),
+                'fair_prob': round(fair_prob, 1),
                 'ai_price': ai_price,
-                'fair_price': ai_price,
+                'fair_price': fair_price,
                 'edge': round(edge, 1),
                 'value': 'YES' if edge >= margin_pct else 'NO'
             })

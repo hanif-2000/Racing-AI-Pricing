@@ -26,8 +26,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install playwright aiohttp
-          playwright install chromium
-          playwright install-deps chromium
+          playwright install chromium firefox
+          playwright install-deps chromium firefox
 
       - name: Run Scraper
         run: python github_scraper.py
