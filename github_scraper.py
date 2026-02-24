@@ -6,6 +6,7 @@ import asyncio
 import aiohttp
 import re
 import os
+import gc
 import random
 import logging
 from datetime import datetime
@@ -18,11 +19,14 @@ from typing import List, Dict, Optional
 
 API_URL = 'https://api.jockeydriverchallenge.com/api/receive-scrape/'
 
-MAX_RETRIES = 3
-RETRY_BACKOFF = [2, 4, 8]
+MAX_RETRIES = 2
+RETRY_BACKOFF = [2, 4]
 MAX_MEETINGS_PER_SCRAPER = 12
-BROWSER_TIMEOUT = 45000
-NAVIGATION_TIMEOUT = 60000
+BROWSER_TIMEOUT = 30000
+NAVIGATION_TIMEOUT = 30000
+
+# Detect low-memory server mode
+LOW_MEMORY = os.environ.get('SCRAPER_MODE') == 'sequential'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +84,11 @@ class BaseScraper:
 
     async def start_browser(self, use_firefox: bool = False):
         self.playwright = await async_playwright().start()
+
+        # On low-memory servers, skip Firefox unless explicitly required
+        if use_firefox and LOW_MEMORY:
+            self.log("Low-memory mode: using Chromium instead of Firefox")
+            use_firefox = False
 
         if use_firefox:
             try:
@@ -153,13 +162,25 @@ class BaseScraper:
         self.log(f"Browser started (UA: ...{ua[-30:]})")
 
     async def close_browser(self):
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        try:
+            if self.context:
+                await self.context.close()
+        except Exception:
+            pass
+        try:
+            if self.browser:
+                await self.browser.close()
+        except Exception:
+            pass
+        try:
+            if self.playwright:
+                await self.playwright.stop()
+        except Exception:
+            pass
         self.browser = None
         self.playwright = None
         self.context = None
+        gc.collect()
 
     async def new_page(self):
         return await self.context.new_page()
@@ -167,7 +188,7 @@ class BaseScraper:
     async def safe_goto(self, page, url: str, wait_selector: Optional[str] = None):
         await page.goto(url, timeout=NAVIGATION_TIMEOUT, wait_until='domcontentloaded')
         try:
-            await page.wait_for_load_state('networkidle', timeout=15000)
+            await page.wait_for_load_state('networkidle', timeout=8000)
         except PlaywrightTimeout:
             self.log("Network idle timeout - continuing anyway")
         if wait_selector:
@@ -1957,7 +1978,9 @@ async def run_sequential(scrapers_config: List[tuple]) -> tuple:
                 logger.info(f"  → Got {len(result)} meetings")
         except Exception as e:
             logger.error(f"  → Failed: {str(e)[:60]}")
-        await asyncio.sleep(1)
+        # Force memory cleanup between scrapers on low-RAM server
+        gc.collect()
+        await asyncio.sleep(2)
     return jockey, driver
 
 
@@ -2057,7 +2080,25 @@ async def send_to_api(data, retries: int = 3):
     return False
 
 
+async def check_network():
+    """Quick network check before starting scrapers."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get('https://www.google.com',
+                                   timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    logger.info("✅ Network OK")
+                    return True
+    except Exception as e:
+        logger.error(f"❌ Network check failed: {str(e)[:60]}")
+    return False
+
+
 async def main():
+    if not await check_network():
+        logger.error("❌ No network connectivity - aborting")
+        return
+
     data = await run_all_scrapers()
 
     logger.info(f"\n📊 Results:")
