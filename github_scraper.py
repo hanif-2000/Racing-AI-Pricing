@@ -325,6 +325,51 @@ class LadbrokesScraper(BaseScraper):
         super().__init__()
         self.name = "Ladbrokes"
 
+    async def _load_extras_page(self, page) -> List[str]:
+        """Load Ladbrokes extras page with proper SPA rendering wait."""
+        # Step 1: Visit home page first to establish session + cookies
+        try:
+            await self.safe_goto(page, 'https://www.ladbrokes.com.au')
+            await random_delay(3.0, 5.0)
+            # Dismiss cookie/age modals
+            for sel in ['text="Accept"', 'text="OK"', 'text="Continue"',
+                        'button:has-text("Accept")', 'text="I am 18+"',
+                        'button:has-text("I am")', '[aria-label="Close"]']:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() > 0:
+                        await el.click(timeout=2000)
+                        await random_delay(0.5, 1.0)
+                except Exception:
+                    pass
+            lines = await self.get_text_lines(page)
+            self.log(f"Home page: {len(lines)} lines")
+        except Exception:
+            self.log("Home page visit failed, continuing...")
+
+        # Step 2: Navigate to extras page
+        await self.safe_goto(
+            page, 'https://www.ladbrokes.com.au/racing/extras')
+        await random_delay(3.0, 5.0)
+
+        # Step 3: Wait for SPA to render content (not just skeleton)
+        for attempt in range(5):
+            lines = await self.get_text_lines(page)
+            if len(lines) > 15:
+                break
+            self.log(f"SPA still loading ({len(lines)} lines), waiting...")
+            await random_delay(2.0, 3.0)
+            # Scroll to trigger lazy loading
+            await page.evaluate('window.scrollBy(0, 500)')
+
+        # Step 4: Scroll full page to load all lazy content
+        for _ in range(6):
+            await page.evaluate('window.scrollBy(0, 600)')
+            await random_delay(0.4, 0.7)
+
+        lines = await self.get_text_lines(page)
+        return lines
+
     async def scrape_jockey(self) -> List[Dict]:
         async def _do_scrape():
             meetings = []
@@ -333,28 +378,22 @@ class LadbrokesScraper(BaseScraper):
                 page = await self.new_page()
                 self.log("Starting jockey...")
 
-                # Visit home page first then navigate (looks more natural)
-                try:
-                    await self.safe_goto(
-                        page, 'https://www.ladbrokes.com.au')
-                    await random_delay(2.0, 3.5)
-                except Exception:
-                    pass
-
-                await self.safe_goto(
-                    page,
-                    'https://www.ladbrokes.com.au/racing/extras'
-                )
-                await random_delay(1.5, 3.0)
-
-                lines = await self.get_text_lines(page)
+                lines = await self._load_extras_page(page)
                 if self.is_page_blocked(lines):
                     self.log("Page appears blocked")
                     return []
 
-                self.log(f"Page loaded: {len(lines)} lines")
+                self.log(f"Extras page loaded: {len(lines)} lines")
+                if len(lines) < 15:
+                    self.log_diagnostics(lines, "jockey-too-few-lines")
+                    return []
+
                 horse_meetings = self._find_section(lines, 'Horse Racing', 'Greyhounds')
                 self.log(f"Found {len(horse_meetings)} horse meetings")
+                if not horse_meetings:
+                    # Try alternate meeting detection
+                    horse_meetings = self._find_meetings_alt(lines, 'Jockey Challenge')
+                    self.log(f"Alt detection: {len(horse_meetings)} meetings")
                 if not horse_meetings:
                     self.log_diagnostics(lines, "jockey-no-meetings")
 
@@ -362,20 +401,25 @@ class LadbrokesScraper(BaseScraper):
                     try:
                         await self.safe_goto(
                             page,
-                            'https://www.ladbrokes.com.au/racing/extras'
-                        )
-                        await random_delay(1.0, 2.0)
+                            'https://www.ladbrokes.com.au/racing/extras')
+                        await random_delay(2.0, 3.0)
+                        # Wait for content to load again
+                        for _ in range(3):
+                            await page.evaluate('window.scrollBy(0, 400)')
+                            await random_delay(0.3, 0.5)
 
                         clicked = await self.safe_click(page, f'text="{meeting}"')
                         if not clicked:
                             continue
 
+                        await random_delay(1.5, 2.5)
                         text = await page.evaluate('document.body.innerText')
                         jc = f'Jockey Challenge - {meeting}'
                         if jc in text:
                             clicked = await self.safe_click(page, f'text="{jc}"')
                             if not clicked:
                                 continue
+                            await random_delay(1.5, 2.5)
                             lines = await self.get_text_lines(page)
                             jockeys = self._parse_odds(lines)
                             if jockeys:
@@ -389,6 +433,19 @@ class LadbrokesScraper(BaseScraper):
                                 self.log(f"✅ {meeting}: {len(jockeys)} jockeys")
                             else:
                                 self.log(f"⚠️ {meeting}: parsed 0 jockeys")
+                        else:
+                            # Content might already be on the meeting page
+                            lines = await self.get_text_lines(page)
+                            jockeys = self._parse_odds(lines)
+                            if jockeys:
+                                meetings.append({
+                                    'meeting': meeting.upper(),
+                                    'type': 'jockey',
+                                    'jockeys': jockeys,
+                                    'source': 'ladbrokes',
+                                    'country': get_country(meeting)
+                                })
+                                self.log(f"✅ {meeting}: {len(jockeys)} jockeys (direct)")
                     except Exception as e:
                         self.log(f"⚠️ {meeting}: {str(e)[:50]}")
                     await random_delay(1.0, 2.5)
@@ -406,27 +463,22 @@ class LadbrokesScraper(BaseScraper):
                 page = await self.new_page()
                 self.log("Starting driver...")
 
-                try:
-                    await self.safe_goto(
-                        page, 'https://www.ladbrokes.com.au')
-                    await random_delay(2.0, 3.5)
-                except Exception:
-                    pass
-
-                await self.safe_goto(
-                    page,
-                    'https://www.ladbrokes.com.au/racing/extras'
-                )
-                await random_delay(1.5, 3.0)
-
-                lines = await self.get_text_lines(page)
+                lines = await self._load_extras_page(page)
                 if self.is_page_blocked(lines):
                     self.log("Page appears blocked")
                     return []
 
-                self.log(f"Page loaded: {len(lines)} lines")
+                self.log(f"Extras page loaded: {len(lines)} lines")
+                if len(lines) < 15:
+                    self.log_diagnostics(lines, "driver-too-few-lines")
+                    return []
+
                 harness = self._find_harness(lines)
                 self.log(f"Found {len(harness)} harness meetings")
+                if not harness:
+                    # Try alternate detection
+                    harness = self._find_meetings_alt(lines, 'Driver Challenge')
+                    self.log(f"Alt detection: {len(harness)} harness meetings")
                 if not harness:
                     self.log_diagnostics(lines, "driver-no-meetings")
 
@@ -434,20 +486,24 @@ class LadbrokesScraper(BaseScraper):
                     try:
                         await self.safe_goto(
                             page,
-                            'https://www.ladbrokes.com.au/racing/extras'
-                        )
-                        await random_delay(1.0, 2.0)
+                            'https://www.ladbrokes.com.au/racing/extras')
+                        await random_delay(2.0, 3.0)
+                        for _ in range(3):
+                            await page.evaluate('window.scrollBy(0, 400)')
+                            await random_delay(0.3, 0.5)
 
                         clicked = await self.safe_click(page, f'text="{meeting}"')
                         if not clicked:
                             continue
 
+                        await random_delay(1.5, 2.5)
                         text = await page.evaluate('document.body.innerText')
                         dc = f'Driver Challenge - {meeting}'
                         if dc in text:
                             clicked = await self.safe_click(page, f'text="{dc}"')
                             if not clicked:
                                 continue
+                            await random_delay(1.5, 2.5)
                             lines = await self.get_text_lines(page)
                             drivers = self._parse_odds(lines)
                             if drivers:
@@ -461,6 +517,18 @@ class LadbrokesScraper(BaseScraper):
                                 self.log(f"✅ {meeting} driver: {len(drivers)}")
                             else:
                                 self.log(f"⚠️ {meeting}: parsed 0 drivers")
+                        else:
+                            lines = await self.get_text_lines(page)
+                            drivers = self._parse_odds(lines)
+                            if drivers:
+                                meetings.append({
+                                    'meeting': meeting.upper(),
+                                    'type': 'driver',
+                                    'drivers': drivers,
+                                    'source': 'ladbrokes',
+                                    'country': get_country(meeting)
+                                })
+                                self.log(f"✅ {meeting} driver: {len(drivers)} (direct)")
                     except Exception as e:
                         self.log(f"⚠️ {meeting}: {str(e)[:50]}")
                     await random_delay(1.0, 2.5)
@@ -473,7 +541,7 @@ class LadbrokesScraper(BaseScraper):
     def _find_section(self, lines, start, end):
         s_idx = e_idx = None
         for i, l in enumerate(lines):
-            if l == start and i > 30:
+            if l == start and i > 10:
                 s_idx = i
             elif l == end and s_idx is not None:
                 e_idx = i
@@ -490,7 +558,7 @@ class LadbrokesScraper(BaseScraper):
     def _find_harness(self, lines):
         start = None
         for i, l in enumerate(lines):
-            if l == 'Harness Racing' and i > 30:
+            if l == 'Harness Racing' and i > 10:
                 start = i
                 break
         result = []
@@ -502,6 +570,21 @@ class LadbrokesScraper(BaseScraper):
                 if '24/7' in lines[i] or 'Responsible' in lines[i] or 'Greyhounds' in lines[i]:
                     break
         return result
+
+    def _find_meetings_alt(self, lines, challenge_type: str) -> List[str]:
+        """Alternate meeting finder - looks for 'Jockey/Driver Challenge - MEETING' patterns."""
+        meetings = []
+        text = '\n'.join(lines)
+        found = re.findall(
+            rf'{challenge_type}\s*[-–]\s*([A-Za-z ]+)', text)
+        if not found:
+            found = re.findall(
+                rf'([A-Za-z ]+)\s*[-–]\s*{challenge_type}', text)
+        for m in found:
+            name = m.strip()
+            if name and len(name) > 2 and name not in meetings:
+                meetings.append(name)
+        return meetings
 
     def _parse_odds(self, lines):
         result = []
@@ -532,26 +615,71 @@ class ElitebetScraper(BaseScraper):
         async def _do_scrape():
             meetings = []
             try:
-                await self.start_browser()
+                # Use Firefox for WAF bypass (Elitebet = Ladbrokes sister site)
+                await self.start_browser(use_firefox=True)
                 page = await self.new_page()
                 self.log("Starting...")
 
-                await self.safe_goto(page, 'https://www.elitebet.com.au/racing')
-                await random_delay(1.5, 3.0)
+                # Visit home page first to establish session
+                try:
+                    await self.safe_goto(page, 'https://www.elitebet.com.au')
+                    await random_delay(2.0, 4.0)
+                    # Dismiss modals
+                    for sel in ['text="Accept"', 'text="OK"', 'text="Continue"',
+                                'button:has-text("Accept")', '[aria-label="Close"]']:
+                        try:
+                            el = page.locator(sel).first
+                            if await el.count() > 0:
+                                await el.click(timeout=2000)
+                                await random_delay(0.5, 1.0)
+                        except Exception:
+                            pass
+                except Exception:
+                    self.log("Home page visit failed, continuing...")
 
-                lines = await self.get_text_lines(page)
-                if self.is_page_blocked(lines):
-                    self.log("Page appears blocked")
+                # Try multiple URLs
+                racing_urls = [
+                    'https://www.elitebet.com.au/racing',
+                    'https://www.elitebet.com.au/racing/extras',
+                ]
+                loaded = False
+                for url in racing_urls:
+                    try:
+                        await self.safe_goto(page, url)
+                        await random_delay(2.0, 4.0)
+                        lines = await self.get_text_lines(page)
+                        if not self.is_page_blocked(lines) and len(lines) > 10:
+                            self.log(f"Loaded {url}: {len(lines)} lines")
+                            loaded = True
+                            break
+                        self.log(f"Blocked or empty at {url}")
+                    except Exception:
+                        pass
+
+                if not loaded:
+                    self.log("All URLs blocked/failed")
+                    lines = await self.get_text_lines(page)
+                    self.log_diagnostics(lines, "all-blocked")
                     return []
 
-                lines = await self.get_text_lines(page)
                 self.log(f"Page loaded: {len(lines)} lines")
 
-                jt = page.locator('text=Jockey Challenge')
-                if await jt.count() > 0:
-                    await jt.click()
-                    await random_delay(1.5, 3.0)
-                else:
+                # Try clicking Jockey Challenge section
+                jc_found = False
+                for sel in ['text=Jockey Challenge', 'text="Jockey Challenge"',
+                            'a:has-text("Jockey Challenge")',
+                            'button:has-text("Jockey Challenge")']:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.click(timeout=5000)
+                            await random_delay(2.0, 3.0)
+                            jc_found = True
+                            break
+                    except Exception:
+                        pass
+
+                if not jc_found:
                     self.log("No Jockey Challenge section found")
                     self.log_diagnostics(lines, "no-jc-section")
                     return []
@@ -1005,24 +1133,101 @@ class TABScraper(BaseScraper):
                 page = await self.new_page()
                 self.log("Starting...")
 
-                url = ('https://www.tab.com.au/sports/betting/'
-                       'Jockey%20Challenge/competitions/Jockey%20Challenge')
-                await self.safe_goto(page, url)
-                await random_delay(4.0, 6.0)
+                # Step 1: Visit home page first to establish session (SPA needs this)
+                try:
+                    await self.safe_goto(page, 'https://www.tab.com.au')
+                    await random_delay(3.0, 5.0)
+                    # Dismiss any modals/cookies
+                    for sel in ['text="Accept"', 'text="OK"', 'text="Close"',
+                                'button:has-text("Accept")', '[aria-label="Close"]']:
+                        try:
+                            el = page.locator(sel).first
+                            if await el.count() > 0:
+                                await el.click(timeout=2000)
+                                await random_delay(0.5, 1.0)
+                        except Exception:
+                            pass
+                except Exception:
+                    self.log("Home page visit failed, continuing...")
 
-                lines = await self.get_text_lines(page)
-                if self.is_page_blocked(lines):
-                    self.log("Page appears blocked")
-                    self.log_diagnostics(lines, "blocked")
+                # Step 2: Try multiple JC URLs (TAB changes URL format)
+                jc_urls = [
+                    'https://www.tab.com.au/sports/betting/Jockey%20Challenge/competitions/Jockey%20Challenge',
+                    'https://www.tab.com.au/sports/betting/Jockey+Challenge',
+                    'https://www.tab.com.au/racing/jockey-challenge',
+                ]
+                text = ''
+                for url in jc_urls:
+                    try:
+                        await self.safe_goto(page, url)
+                        await random_delay(4.0, 6.0)
+                        # Wait for SPA to render content
+                        try:
+                            await page.wait_for_selector(
+                                'text=/Jockey Challenge|JOCK MstPts/i',
+                                timeout=10000)
+                        except PlaywrightTimeout:
+                            pass
+                        lines = await self.get_text_lines(page)
+                        if self.is_page_blocked(lines):
+                            self.log(f"Blocked at {url}")
+                            continue
+                        text = '\n'.join(lines)
+                        if 'JOCK MstPts' in text or 'Jockey Challenge' in text:
+                            self.log(f"JC content found at: {url}")
+                            break
+                        self.log(f"No JC content at {url} ({len(lines)} lines)")
+                    except Exception as e:
+                        self.log(f"URL failed: {url} - {str(e)[:40]}")
+
+                # Step 3: If direct URLs failed, try clicking through navigation
+                if 'JOCK MstPts' not in text and 'Jockey Challenge' not in text:
+                    self.log("Direct URLs failed, trying navigation click...")
+                    try:
+                        # Go to racing section
+                        await self.safe_goto(page, 'https://www.tab.com.au')
+                        await random_delay(2.0, 3.0)
+                        # Click Racing in nav
+                        for sel in ['text="Racing"', 'a:has-text("Racing")',
+                                    '[data-testid="racing"]', 'text="RACING"']:
+                            clicked = await self.safe_click(page, sel, timeout=3000)
+                            if clicked:
+                                await random_delay(2.0, 3.0)
+                                break
+                        # Now look for Jockey Challenge link
+                        for sel in ['text="Jockey Challenge"',
+                                    'a:has-text("Jockey Challenge")',
+                                    'text="JOCKEY CHALLENGE"']:
+                            clicked = await self.safe_click(page, sel, timeout=3000)
+                            if clicked:
+                                await random_delay(3.0, 5.0)
+                                lines = await self.get_text_lines(page)
+                                text = '\n'.join(lines)
+                                if 'JOCK MstPts' in text:
+                                    self.log("Found JC via navigation!")
+                                    break
+                    except Exception:
+                        pass
+
+                if not text:
+                    self.log("Could not load any content")
                     return []
 
+                lines = [l.strip() for l in text.split('\n') if l.strip()]
                 self.log(f"Page loaded: {len(lines)} lines")
-                text = '\n'.join(lines)
 
                 if 'JOCK MstPts' not in text:
+                    # Try alternate parsing - TAB sometimes shows different format
+                    if 'Jockey Challenge' in text:
+                        self.log("Found 'Jockey Challenge' text, trying alt parse...")
+                        meetings = self._parse_alt(text)
+                        if meetings:
+                            for m in meetings:
+                                self.log(f"✅ {m['meeting']}: {len(m.get('jockeys', []))} jockeys")
+                            return meetings
+
                     self.log("No JOCK MstPts content found")
-                    # Log first 20 lines for debugging
-                    for i, l in enumerate(lines[:20]):
+                    for i, l in enumerate(lines[:30]):
                         self.log(f"  [{i}]: {l[:100]}")
                     return []
 
@@ -1098,6 +1303,62 @@ class TABScraper(BaseScraper):
                 'source': 'tab',
                 'country': get_country(current)
             })
+        return meetings
+
+    def _parse_alt(self, text: str) -> List[Dict]:
+        """Alternate TAB parser for different page format.
+        Handles cases where TAB shows 'Jockey Challenge - Meeting' format."""
+        meetings = []
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+        # Find meeting names: "Jockey Challenge - MEETINGNAME"
+        meeting_names = re.findall(
+            r'Jockey Challenge\s*[-–]\s*([A-Za-z ]+)', text)
+        if not meeting_names:
+            meeting_names = re.findall(
+                r'([A-Z][A-Z ]+)\s*Jockey Challenge', text)
+        meeting_names = list(dict.fromkeys(
+            [m.strip() for m in meeting_names if len(m.strip()) > 2]))
+
+        if not meeting_names:
+            return []
+
+        self.log(f"Alt parse found {len(meeting_names)} meetings: {meeting_names}")
+
+        for meeting in meeting_names[:MAX_MEETINGS_PER_SCRAPER]:
+            jockeys = []
+            # Find section for this meeting and parse odds
+            in_section = False
+            prev = None
+            for line in lines:
+                if meeting.lower() in line.lower() and 'challenge' in line.lower():
+                    in_section = True
+                    continue
+                if in_section:
+                    # Stop at next meeting or unrelated section
+                    if ('Challenge' in line and meeting.lower() not in line.lower()):
+                        break
+                    try:
+                        odds = float(line)
+                        if 1.01 < odds < 500 and prev:
+                            jockeys.append({'name': prev, 'odds': odds})
+                        prev = None
+                    except ValueError:
+                        if (len(line) > 2 and line[0].isupper()
+                                and not line.isupper()
+                                and 'Any Other' not in line
+                                and not any(c.isdigit() for c in line)):
+                            prev = line
+
+            if jockeys:
+                meetings.append({
+                    'meeting': meeting.upper(),
+                    'type': 'jockey',
+                    'jockeys': jockeys,
+                    'source': 'tab',
+                    'country': get_country(meeting)
+                })
+
         return meetings
 
 

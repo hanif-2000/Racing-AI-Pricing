@@ -194,22 +194,18 @@ def merge_meetings(meetings, participant_key='jockeys'):
 
 
 def calculate_ai_prices(participants, margin=1.02):
-    """Calculate AI prices using confidence-based overround removal.
+    """Calculate AI prices using proportional overround removal.
 
-    Key insight: with few bookmakers, AI prices stay CLOSE to market odds.
-    With many bookmakers, AI prices move toward true fair value.
-    Value appears when one bookmaker offers better odds than the consensus.
-
-    Algorithm:
-    1. Calculate market overround from averaged odds
-    2. Remove a PORTION of overround based on confidence (num bookmakers)
-       - 1 bookmaker:  remove 45% of overround (AI close to market)
-       - 2 bookmakers: remove 60% (moderate adjustment)
-       - 3 bookmakers: remove 75% (strong adjustment)
-       - 4+ bookmakers: remove 90% (near-fair price)
-    3. AI price = odds adjusted by partial overround removal
-    4. Edge = how much best bookmaker odds exceed AI price
+    Standard bookmaker pricing model:
+    1. Calculate total implied probability from averaged odds (includes overround)
+    2. Normalize probabilities to 100% (removes ALL overround proportionally)
+    3. AI price = true fair odds (what the price SHOULD be without margin)
+    4. Edge = how much the best available bookmaker odds exceed fair price
     5. Value = YES when edge >= margin threshold
+
+    Key: You need multiple bookmakers to find value. If best_odds at one
+    bookmaker exceeds the fair price derived from the market consensus,
+    that bookmaker is offering value on that selection.
     """
     if not participants:
         return participants
@@ -220,9 +216,9 @@ def calculate_ai_prices(participants, margin=1.02):
     if not valid:
         return participants
 
-    # Total implied probability (overround)
+    # Total implied probability from averaged odds (overround included)
     total_prob = sum(1 / p['odds'] for p in valid)
-    overround = max(total_prob - 1.0, 0)
+    overround_pct = round((total_prob - 1.0) * 100, 1)
 
     for p in participants:
         odds = p.get('odds', 0)
@@ -232,34 +228,34 @@ def calculate_ai_prices(participants, margin=1.02):
         if odds > 0 and total_prob > 0:
             raw_prob = 1 / odds
 
-            # Fair probability (full overround removed) — for reference
+            # Fair probability: normalize to 100% (full overround removal)
             fair_prob = (raw_prob / total_prob) * 100
             fair_price = round(100 / fair_prob, 2) if fair_prob > 0 else 0
 
-            # Confidence-based partial overround removal
-            # More bookmakers = more confident in removing overround
-            removal = min(0.30 + 0.20 * num_books, 0.90)
-            adjusted_total = 1 + overround * (1 - removal)
-            ai_prob = (raw_prob / adjusted_total) * 100 if adjusted_total > 0 else 0
-            ai_price = round(100 / ai_prob, 2) if ai_prob > 0 else 0
+            # AI price = fair price (true odds, no bookmaker margin)
+            ai_price = fair_price
 
-            # Edge: best available odds vs AI price
+            # Edge: best available odds vs fair AI price
+            # Positive edge = bookmaker offers better than fair value
             edge = ((best_odds - ai_price) / ai_price * 100) if ai_price > 0 else 0
 
             p.update({
                 'tab_odds': best_odds,
                 'avg_odds': odds,
-                'implied_prob': round(fair_prob, 1),
+                'implied_prob': round(raw_prob * 100, 1),
                 'fair_prob': round(fair_prob, 1),
                 'ai_price': ai_price,
                 'fair_price': fair_price,
                 'edge': round(edge, 1),
-                'value': 'YES' if edge >= margin_pct else 'NO'
+                'value': 'YES' if edge >= margin_pct else 'NO',
+                'num_bookmakers': num_books,
+                'overround': overround_pct,
             })
         else:
             p.update({
                 'tab_odds': 0, 'avg_odds': 0, 'implied_prob': 0, 'fair_prob': 0,
-                'ai_price': 0, 'fair_price': 0, 'edge': 0, 'value': 'NO'
+                'ai_price': 0, 'fair_price': 0, 'edge': 0, 'value': 'NO',
+                'num_bookmakers': 0, 'overround': 0,
             })
 
     return participants
