@@ -86,17 +86,36 @@ class BaseScraper:
                 self.browser = await self.playwright.firefox.launch(
                     headless=True,
                 )
-                ua = random.choice(USER_AGENTS)
+                # Pick a Firefox-appropriate UA (avoid Chrome UAs on Firefox)
+                firefox_uas = [
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0',
+                    'Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0',
+                ]
+                ua = random.choice(firefox_uas)
                 self.context = await self.browser.new_context(
                     viewport={'width': 1920, 'height': 1080},
                     user_agent=ua,
                     locale='en-AU',
                     timezone_id='Australia/Sydney',
                 )
+                # Stealth for Firefox too - hide automation signals
+                await self.context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-AU', 'en-US', 'en']
+                    });
+                    // Firefox-specific: override automation detection
+                    if (navigator.userAgent.includes('Firefox')) {
+                        Object.defineProperty(navigator, 'plugins', {
+                            get: () => [1, 2, 3]
+                        });
+                    }
+                """)
                 self.log(f"Browser started [Firefox] (UA: ...{ua[-30:]})")
                 return
-            except Exception:
-                self.log("Firefox not available, falling back to Chromium")
+            except Exception as e:
+                self.log(f"Firefox failed: {str(e)[:60]}, falling back to Chromium")
 
         self.browser = await self.playwright.chromium.launch(
             headless=True,
@@ -280,6 +299,7 @@ class TABtouchScraper(BaseScraper):
                             self.log(f"✅ {meeting}: {len(jockeys)} jockeys")
                         else:
                             self.log(f"⚠️ {meeting}: parsed 0 jockeys")
+                            self.log_diagnostics(lines, f"parse-fail-{meeting}")
                     except Exception as e:
                         self.log(f"⚠️ {meeting}: {str(e)[:50]}")
                     await random_delay(1.0, 2.5)
@@ -291,15 +311,21 @@ class TABtouchScraper(BaseScraper):
 
     def _parse(self, lines: List[str]) -> List[Dict]:
         jockeys = []
-        p1 = re.compile(r'^([A-Z][A-Z\s]+)\s+(\d{6})\s+(\d+\.\d{2})$')
-        p2n = re.compile(r'^([A-Z][A-Z\s]+)\s+(\d{6})$')
+        # Pattern 1: NAME 123456 12.34 (name + any digits + odds on one line)
+        p1 = re.compile(r'^([A-Z][A-Z\s]+)\s+\d+\s+(\d+\.\d{2})$')
+        # Pattern 2: NAME 123456 on one line, 12.34 on next
+        p2n = re.compile(r'^([A-Z][A-Z\s]+)\s+\d+$')
         p2o = re.compile(r'^(\d+\.\d{2})$')
+        # Pattern 3: Just NAME on one line, 12.34 on next (simplest)
+        p3n = re.compile(r'^([A-Z][A-Z\s]{2,})$')
+        skip_names = ['ANY OTHER', 'JOCKEY CHALLENGE', 'POINTS', 'RACE',
+                      'MEETING', 'CLOSE', 'OPEN', 'SUSPENDED']
         i = 0
         while i < len(lines):
             m1 = p1.match(lines[i])
             if m1:
-                name, odds = m1.group(1).strip(), float(m1.group(3))
-                if 'ANY OTHER' not in name and 1 < odds < 500:
+                name, odds = m1.group(1).strip(), float(m1.group(2))
+                if not any(s in name for s in skip_names) and 1 < odds < 500:
                     jockeys.append({'name': name.title(), 'odds': odds})
                 i += 1
                 continue
@@ -308,7 +334,18 @@ class TABtouchScraper(BaseScraper):
                 m2o = p2o.match(lines[i + 1])
                 if m2o:
                     name, odds = m2n.group(1).strip(), float(m2o.group(1))
-                    if 'ANY OTHER' not in name and 1 < odds < 500:
+                    if not any(s in name for s in skip_names) and 1 < odds < 500:
+                        jockeys.append({'name': name.title(), 'odds': odds})
+                    i += 2
+                    continue
+            # Pattern 3: ALL CAPS name on its own line, odds on next line
+            if i + 1 < len(lines):
+                m3n = p3n.match(lines[i])
+                m3o = p2o.match(lines[i + 1])
+                if m3n and m3o:
+                    name, odds = m3n.group(1).strip(), float(m3o.group(1))
+                    if (not any(s in name for s in skip_names)
+                            and 1 < odds < 500 and len(name) > 3):
                         jockeys.append({'name': name.title(), 'odds': odds})
                     i += 2
                     continue
@@ -620,13 +657,14 @@ class ElitebetScraper(BaseScraper):
                 page = await self.new_page()
                 self.log("Starting...")
 
-                # Visit home page first to establish session
+                # Visit home page first to establish session + cookies
                 try:
                     await self.safe_goto(page, 'https://www.elitebet.com.au')
-                    await random_delay(2.0, 4.0)
-                    # Dismiss modals
+                    await random_delay(3.0, 5.0)
+                    # Dismiss cookie/age modals
                     for sel in ['text="Accept"', 'text="OK"', 'text="Continue"',
-                                'button:has-text("Accept")', '[aria-label="Close"]']:
+                                'button:has-text("Accept")', 'text="I am 18+"',
+                                'button:has-text("I am")', '[aria-label="Close"]']:
                         try:
                             el = page.locator(sel).first
                             if await el.count() > 0:
@@ -634,30 +672,43 @@ class ElitebetScraper(BaseScraper):
                                 await random_delay(0.5, 1.0)
                         except Exception:
                             pass
-                except Exception:
-                    self.log("Home page visit failed, continuing...")
+                    home_lines = await self.get_text_lines(page)
+                    self.log(f"Home page: {len(home_lines)} lines")
+                    if self.is_page_blocked(home_lines):
+                        self.log("Blocked at home page")
+                        self.log_diagnostics(home_lines, "home-blocked")
+                        return []
+                except Exception as e:
+                    self.log(f"Home page failed: {str(e)[:50]}")
 
-                # Try multiple URLs
+                # Try multiple URLs including extras/specials paths
                 racing_urls = [
-                    'https://www.elitebet.com.au/racing',
                     'https://www.elitebet.com.au/racing/extras',
+                    'https://www.elitebet.com.au/racing/specials',
+                    'https://www.elitebet.com.au/racing',
                 ]
                 loaded = False
                 for url in racing_urls:
                     try:
                         await self.safe_goto(page, url)
-                        await random_delay(2.0, 4.0)
-                        lines = await self.get_text_lines(page)
+                        await random_delay(3.0, 5.0)
+                        # Wait for SPA content
+                        for _ in range(4):
+                            lines = await self.get_text_lines(page)
+                            if len(lines) > 15:
+                                break
+                            await random_delay(2.0, 3.0)
+                            await page.evaluate('window.scrollBy(0, 500)')
                         if not self.is_page_blocked(lines) and len(lines) > 10:
                             self.log(f"Loaded {url}: {len(lines)} lines")
                             loaded = True
                             break
-                        self.log(f"Blocked or empty at {url}")
+                        self.log(f"Blocked or empty at {url} ({len(lines)} lines)")
                     except Exception:
                         pass
 
                 if not loaded:
-                    self.log("All URLs blocked/failed")
+                    self.log("Page appears blocked")
                     lines = await self.get_text_lines(page)
                     self.log_diagnostics(lines, "all-blocked")
                     return []
@@ -852,7 +903,7 @@ class PointsBetScraper(BaseScraper):
                     'a, button, [role="tab"], div[class*="tab"], span');
                 for (const el of els) {
                     const t = (el.textContent || '').trim().toLowerCase();
-                    if (t === 'specials' || t.includes('special')) {
+                    if (t === 'specials' || t === 'racing specials') {
                         el.click();
                         return t;
                     }
@@ -868,6 +919,64 @@ class PointsBetScraper(BaseScraper):
                 text = await page.evaluate('document.body.innerText')
                 if challenge_kw in text or specials_kw in text:
                     return text
+
+                # Approach 3b: After clicking specials, try "ALL RACING SPECIALS"
+                # or "See All" to expand the specials content
+                expand_selectors = [
+                    'text="ALL RACING SPECIALS"',
+                    'text="All Racing Specials"',
+                    'text="See All"',
+                    'text="SEE ALL"',
+                    'text="View All"',
+                    'a:has-text("All Racing")',
+                    'a:has-text("See All")',
+                    'button:has-text("All Racing")',
+                    'button:has-text("See All")',
+                ]
+                for sel in expand_selectors:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.click(timeout=3000)
+                            self.log(f"Clicked expand: {sel}")
+                            await random_delay(2.0, 4.0)
+                            for _ in range(5):
+                                await page.evaluate('window.scrollBy(0, 600)')
+                                await random_delay(0.3, 0.5)
+                            text = await page.evaluate('document.body.innerText')
+                            if challenge_kw in text or specials_kw in text:
+                                self.log("Found challenge content after expand!")
+                                return text
+                            break
+                    except Exception:
+                        pass
+
+                # Approach 3c: DOM search for "ALL RACING SPECIALS" link
+                try:
+                    found2 = await page.evaluate('''() => {
+                        const els = document.querySelectorAll('a, button, span, div');
+                        for (const el of els) {
+                            const t = (el.textContent || '').trim().toLowerCase();
+                            if (t.includes('all racing specials') || t === 'see all'
+                                || t === 'view all') {
+                                el.click();
+                                return t;
+                            }
+                        }
+                        return null;
+                    }''')
+                    if found2:
+                        self.log(f"DOM click expand: '{found2}'")
+                        await random_delay(2.0, 4.0)
+                        for _ in range(8):
+                            await page.evaluate('window.scrollBy(0, 600)')
+                            await random_delay(0.3, 0.5)
+                        text = await page.evaluate('document.body.innerText')
+                        if challenge_kw in text or specials_kw in text:
+                            self.log("Found challenge content after DOM expand!")
+                            return text
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -878,8 +987,14 @@ class PointsBetScraper(BaseScraper):
         for i, l in enumerate(lines[:80]):
             low = l.lower()
             if any(kw in low for kw in ['special', 'extra', 'challenge',
-                                         'jockey', 'driver']):
+                                         'jockey', 'driver', 'watch']):
                 self.log(f"  [{i}]: {l[:100]}")
+
+        # Even if no challenge keyword found, return text so caller can
+        # attempt to parse whatever content we got
+        if len(lines) > 20:
+            self.log("Returning page content for best-effort parsing")
+            return text
 
         return ''
 
@@ -1055,7 +1170,7 @@ class PointsBetScraper(BaseScraper):
     async def scrape_jockey(self) -> List[Dict]:
         async def _do_scrape():
             try:
-                await self.start_browser()
+                await self.start_browser(use_firefox=True)
                 page = await self.new_page()
                 self.log("Starting jockey...")
 
@@ -1075,7 +1190,7 @@ class PointsBetScraper(BaseScraper):
     async def scrape_driver(self) -> List[Dict]:
         async def _do_scrape():
             try:
-                await self.start_browser()
+                await self.start_browser(use_firefox=True)
                 page = await self.new_page()
                 self.log("Starting driver...")
 
@@ -1150,12 +1265,17 @@ class TABScraper(BaseScraper):
                 except Exception:
                     self.log("Home page visit failed, continuing...")
 
-                # Step 2: Try multiple JC URLs (TAB changes URL format)
+                # Step 2: Try multiple JC URLs (TAB changes URL format frequently)
                 jc_urls = [
+                    'https://www.tab.com.au/racing/jockey-challenge',
                     'https://www.tab.com.au/sports/betting/Jockey%20Challenge/competitions/Jockey%20Challenge',
                     'https://www.tab.com.au/sports/betting/Jockey+Challenge',
-                    'https://www.tab.com.au/racing/jockey-challenge',
+                    'https://www.tab.com.au/racing/extras',
+                    'https://www.tab.com.au/racing/specials',
+                    'https://www.tab.com.au/racing?category=jockey-challenge',
                 ]
+                jc_keywords = ['JOCK MstPts', 'Jockey Challenge',
+                               'Jockey Watch', 'jockey challenge']
                 text = ''
                 for url in jc_urls:
                     try:
@@ -1164,48 +1284,83 @@ class TABScraper(BaseScraper):
                         # Wait for SPA to render content
                         try:
                             await page.wait_for_selector(
-                                'text=/Jockey Challenge|JOCK MstPts/i',
+                                'text=/Jockey Challenge|JOCK MstPts|Jockey Watch/i',
                                 timeout=10000)
                         except PlaywrightTimeout:
                             pass
+                        # Scroll to trigger lazy loading
+                        for _ in range(3):
+                            await page.evaluate('window.scrollBy(0, 500)')
+                            await random_delay(0.3, 0.5)
                         lines = await self.get_text_lines(page)
                         if self.is_page_blocked(lines):
                             self.log(f"Blocked at {url}")
                             continue
                         text = '\n'.join(lines)
-                        if 'JOCK MstPts' in text or 'Jockey Challenge' in text:
+                        if any(kw in text for kw in jc_keywords):
                             self.log(f"JC content found at: {url}")
                             break
                         self.log(f"No JC content at {url} ({len(lines)} lines)")
                     except Exception as e:
                         self.log(f"URL failed: {url} - {str(e)[:40]}")
 
-                # Step 3: If direct URLs failed, try clicking through navigation
-                if 'JOCK MstPts' not in text and 'Jockey Challenge' not in text:
-                    self.log("Direct URLs failed, trying navigation click...")
+                # Step 3: If direct URLs failed, try navigation through racing section
+                if not any(kw in text for kw in jc_keywords):
+                    self.log("Direct URLs failed, trying racing section nav...")
                     try:
-                        # Go to racing section
-                        await self.safe_goto(page, 'https://www.tab.com.au')
-                        await random_delay(2.0, 3.0)
-                        # Click Racing in nav
-                        for sel in ['text="Racing"', 'a:has-text("Racing")',
-                                    '[data-testid="racing"]', 'text="RACING"']:
-                            clicked = await self.safe_click(page, sel, timeout=3000)
-                            if clicked:
-                                await random_delay(2.0, 3.0)
-                                break
-                        # Now look for Jockey Challenge link
-                        for sel in ['text="Jockey Challenge"',
-                                    'a:has-text("Jockey Challenge")',
-                                    'text="JOCKEY CHALLENGE"']:
+                        await self.safe_goto(page, 'https://www.tab.com.au/racing')
+                        await random_delay(3.0, 5.0)
+                        # Scroll to load content
+                        for _ in range(5):
+                            await page.evaluate('window.scrollBy(0, 500)')
+                            await random_delay(0.3, 0.5)
+
+                        # Look for any Jockey Challenge or Specials/Extras link
+                        jc_selectors = [
+                            'text="Jockey Challenge"',
+                            'a:has-text("Jockey Challenge")',
+                            'text="JOCKEY CHALLENGE"',
+                            'text="Jockey Watch"',
+                            'a:has-text("Jockey Watch")',
+                            'text="Extras"', 'text="Specials"',
+                            'a:has-text("Extras")', 'a:has-text("Specials")',
+                        ]
+                        for sel in jc_selectors:
                             clicked = await self.safe_click(page, sel, timeout=3000)
                             if clicked:
                                 await random_delay(3.0, 5.0)
+                                for _ in range(3):
+                                    await page.evaluate('window.scrollBy(0, 500)')
+                                    await random_delay(0.3, 0.5)
                                 lines = await self.get_text_lines(page)
                                 text = '\n'.join(lines)
-                                if 'JOCK MstPts' in text:
-                                    self.log("Found JC via navigation!")
+                                if any(kw in text for kw in jc_keywords):
+                                    self.log(f"Found JC via nav click: {sel}")
                                     break
+                    except Exception:
+                        pass
+
+                # Step 4: Last resort - try DOM search for any JC-like link
+                if not any(kw in text for kw in jc_keywords):
+                    self.log("Nav failed, trying DOM search for JC links...")
+                    try:
+                        found = await page.evaluate('''() => {
+                            const els = document.querySelectorAll('a, button, [role="tab"], span');
+                            for (const el of els) {
+                                const t = (el.textContent || '').trim().toLowerCase();
+                                if (t.includes('jockey') || t.includes('challenge')
+                                    || t === 'extras' || t === 'specials') {
+                                    el.click();
+                                    return t;
+                                }
+                            }
+                            return null;
+                        }''')
+                        if found:
+                            self.log(f"DOM click: '{found}'")
+                            await random_delay(3.0, 5.0)
+                            lines = await self.get_text_lines(page)
+                            text = '\n'.join(lines)
                     except Exception:
                         pass
 
@@ -1218,8 +1373,8 @@ class TABScraper(BaseScraper):
 
                 if 'JOCK MstPts' not in text:
                     # Try alternate parsing - TAB sometimes shows different format
-                    if 'Jockey Challenge' in text:
-                        self.log("Found 'Jockey Challenge' text, trying alt parse...")
+                    if any(kw in text for kw in ['Jockey Challenge', 'Jockey Watch']):
+                        self.log("Found JC text (alt format), trying alt parse...")
                         meetings = self._parse_alt(text)
                         if meetings:
                             for m in meetings:
@@ -1407,17 +1562,25 @@ class SportsbetScraper(BaseScraper):
         return ''
 
     async def _click_extras_tab(self, page) -> bool:
-        """Try multiple selectors to click the Extras tab on Sportsbet."""
+        """Try multiple selectors to click the Extras/Specials tab on Sportsbet."""
+        # Sportsbet renamed 'Extras' to 'Specials' - try both
         selectors = [
+            'text="Specials"',
+            'text="SPECIALS"',
+            'text="specials"',
+            '[data-automation-id="specials-tab"]',
+            'button:has-text("Specials")',
+            'a:has-text("Specials")',
+            '[role="tab"]:has-text("Specials")',
+            'li:has-text("Specials")',
+            'span:has-text("Specials")',
+            # Fallback to old Extras name
             'text="Extras"',
             'text="EXTRAS"',
-            'text="extras"',
             '[data-automation-id="extras-tab"]',
             'button:has-text("Extras")',
             'a:has-text("Extras")',
             '[role="tab"]:has-text("Extras")',
-            'li:has-text("Extras")',
-            'span:has-text("Extras")',
         ]
         for sel in selectors:
             try:
@@ -1425,15 +1588,15 @@ class SportsbetScraper(BaseScraper):
                 if await el.count() > 0:
                     await el.click(timeout=3000)
                     await random_delay(1.5, 2.5)
-                    self.log(f"Clicked Extras tab via: {sel}")
+                    self.log(f"Clicked tab via: {sel}")
                     return True
             except Exception:
                 pass
         return False
 
     async def _navigate_to_extras(self, page) -> str:
-        """Navigate to Sportsbet Extras page.
-        'Extras' is a client-side tab in the SPA at /horse-racing, not a URL."""
+        """Navigate to Sportsbet Specials/Extras page.
+        'Specials' (formerly 'Extras') is a client-side tab in the SPA."""
 
         # Step 1: Load the racing page
         text = await self._load_racing(page)
@@ -1441,12 +1604,19 @@ class SportsbetScraper(BaseScraper):
             return ''
 
         lines = [l.strip() for l in text.split('\n') if l.strip()]
-        self.log(f"Racing page loaded ({len(lines)} lines), looking for Extras tab...")
+        self.log(f"Racing page loaded ({len(lines)} lines), looking for Specials/Extras tab...")
 
         # Step 2: Wait for SPA to fully render tabs
         await random_delay(1.0, 2.0)
 
-        # Step 3: Try clicking Extras with multiple selectors
+        # Content keywords that indicate we found the right page
+        content_keywords = ['Challenge', 'Jockey Watch', 'Driver Watch',
+                           'Jockey Challenge', 'Driver Challenge']
+
+        def has_content(t):
+            return any(kw in t for kw in content_keywords)
+
+        # Step 3: Try clicking Specials/Extras tab
         if await self._click_extras_tab(page):
             # Wait for content to load after tab click
             await random_delay(2.0, 3.5)
@@ -1455,31 +1625,50 @@ class SportsbetScraper(BaseScraper):
                 await page.evaluate('window.scrollBy(0, 600)')
                 await random_delay(0.4, 0.7)
             text = await page.evaluate('document.body.innerText')
-            if 'Challenge' in text:
-                self.log("Extras tab loaded with Challenge content!")
+            if has_content(text):
+                self.log("Specials tab loaded with challenge content!")
                 return text
-            self.log("Clicked Extras but no Challenge content found yet")
+            self.log("Clicked tab but no challenge content yet, scrolling more...")
             # Try waiting a bit more for dynamic content
             await random_delay(2.0, 3.0)
-            for _ in range(3):
+            for _ in range(5):
                 await page.evaluate('window.scrollBy(0, 500)')
                 await random_delay(0.3, 0.5)
             text = await page.evaluate('document.body.innerText')
-            if 'Challenge' in text:
+            if has_content(text):
                 self.log("Challenge content appeared after scroll!")
                 return text
 
-        # Step 4: If Extras tab click failed, search DOM for the tab element
-        self.log("Extras tab click failed, searching DOM...")
+            # Still no content - try clicking sub-tabs within Specials
+            sub_selectors = [
+                'text="Jockey Challenge"', 'text="Jockey Watch"',
+                'text="Driver Challenge"', 'text="Driver Watch"',
+                'text="Horse Racing"', 'a:has-text("Horse Racing")',
+                'text="Thoroughbred"', 'a:has-text("Thoroughbred")',
+            ]
+            for sel in sub_selectors:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() > 0:
+                        await el.click(timeout=3000)
+                        await random_delay(2.0, 3.0)
+                        text = await page.evaluate('document.body.innerText')
+                        if has_content(text):
+                            self.log(f"Found content after sub-click: {sel}")
+                            return text
+                except Exception:
+                    pass
+
+        # Step 4: If tab click failed, search DOM
+        self.log("Tab click failed, searching DOM...")
         try:
-            # Find clickable elements that might be tabs
             found_tab = await page.evaluate('''() => {
-                // Search all clickable elements for "Extras" text
                 const elements = document.querySelectorAll(
                     'a, button, [role="tab"], [class*="tab"], li, span, div');
                 for (const el of elements) {
                     const text = (el.textContent || '').trim();
-                    if (text === 'Extras' || text === 'EXTRAS') {
+                    if (text === 'Specials' || text === 'SPECIALS'
+                        || text === 'Extras' || text === 'EXTRAS') {
                         el.click();
                         return text;
                     }
@@ -1487,13 +1676,13 @@ class SportsbetScraper(BaseScraper):
                 return null;
             }''')
             if found_tab:
-                self.log(f"Clicked Extras via DOM search: '{found_tab}'")
+                self.log(f"Clicked via DOM search: '{found_tab}'")
                 await random_delay(2.0, 3.5)
                 for _ in range(6):
                     await page.evaluate('window.scrollBy(0, 600)')
                     await random_delay(0.3, 0.5)
                 text = await page.evaluate('document.body.innerText')
-                if 'Challenge' in text:
+                if has_content(text):
                     return text
         except Exception as e:
             self.log(f"DOM search failed: {str(e)[:50]}")
@@ -1501,18 +1690,17 @@ class SportsbetScraper(BaseScraper):
         # Step 5: Log what we see for debugging
         text = await page.evaluate('document.body.innerText')
         lines = [l.strip() for l in text.split('\n') if l.strip()]
-        self.log("Could not find Extras tab. Current page content:")
-        # Log lines containing navigation-like text for debug
-        for i, l in enumerate(lines[:60]):
+        self.log("Could not find Specials/Extras content. Page navigation:")
+        for i, l in enumerate(lines[:80]):
             if any(kw in l.lower() for kw in [
                 'extra', 'tab', 'challenge', 'jockey', 'driver',
-                'racing', 'special', 'harness'
+                'racing', 'special', 'harness', 'watch'
             ]):
                 self.log(f"  NAV [{i}]: {l[:100]}")
 
-        # Check if Challenge content exists on page without Extras tab
-        if 'Challenge' in text:
-            self.log("Challenge content found on current page without Extras!")
+        # Check if content exists on page without Specials tab
+        if has_content(text):
+            self.log("Challenge content found on current page!")
             return text
 
         return text
@@ -1529,20 +1717,28 @@ class SportsbetScraper(BaseScraper):
                 if not text:
                     return []
 
-                # Search for jockey challenge patterns in text
-                found = re.findall(r'Jockey Challenge\s*[-–]\s*([A-Za-z ]+)', text)
-                if not found:
-                    found = re.findall(r'([A-Za-z ]+)\s*[-–]\s*Jockey Challenge', text)
-                if not found:
-                    found = re.findall(r'Jockey Challenge - ([A-Za-z ]+)', text)
+                # Search for jockey challenge/watch patterns in text
+                # Sportsbet uses both "Jockey Challenge" and "Jockey Watch"
+                patterns = [
+                    r'Jockey Challenge\s*[-–]\s*([A-Za-z ]+)',
+                    r'([A-Za-z ]+)\s*[-–]\s*Jockey Challenge',
+                    r'Jockey Challenge - ([A-Za-z ]+)',
+                    r'Jockey Watch\s*[-–]\s*([A-Za-z ]+)',
+                    r'([A-Za-z ]+)\s*[-–]\s*Jockey Watch',
+                    r'Jockey Watch - ([A-Za-z ]+)',
+                ]
+                found = []
+                for pat in patterns:
+                    found = re.findall(pat, text)
+                    if found:
+                        break
                 found = list(dict.fromkeys([m.strip() for m in found if len(m.strip()) > 2]))
                 self.log(f"Found {len(found)} jockey meetings")
 
                 if not found:
                     lines = [l.strip() for l in text.split('\n') if l.strip()]
-                    # Look for meeting-like content
                     for i, l in enumerate(lines):
-                        if 'jockey' in l.lower() or 'challenge' in l.lower():
+                        if any(kw in l.lower() for kw in ['jockey', 'challenge', 'watch']):
                             self.log(f"  KEYWORD [{i}]: {l[:100]}")
 
                 for meeting in found[:MAX_MEETINGS_PER_SCRAPER]:
@@ -1553,6 +1749,9 @@ class SportsbetScraper(BaseScraper):
                             f'text="Jockey Challenge - {meeting}"',
                             f'text="{meeting} - Jockey Challenge"',
                             f'text="{meeting} Jockey Challenge"',
+                            f'text="Jockey Watch - {meeting}"',
+                            f'text="{meeting} - Jockey Watch"',
+                            f'text="{meeting} Jockey Watch"',
                         ]:
                             clicked = await self.safe_click(page, pat, timeout=3000)
                             if clicked:
@@ -1560,11 +1759,20 @@ class SportsbetScraper(BaseScraper):
 
                         if not clicked:
                             # Try finding and clicking via locator
-                            loc = page.locator(f'text=/{re.escape(meeting)}.*Challenge/i').first
-                            if await loc.count() > 0:
-                                await loc.click(timeout=3000)
-                                clicked = True
-                                await random_delay(1.0, 1.5)
+                            for regex_pat in [
+                                f'text=/{re.escape(meeting)}.*Challenge/i',
+                                f'text=/{re.escape(meeting)}.*Watch/i',
+                                f'text=/Jockey.*{re.escape(meeting)}/i',
+                            ]:
+                                try:
+                                    loc = page.locator(regex_pat).first
+                                    if await loc.count() > 0:
+                                        await loc.click(timeout=3000)
+                                        clicked = True
+                                        await random_delay(1.0, 1.5)
+                                        break
+                                except Exception:
+                                    pass
 
                         if not clicked:
                             continue
@@ -1609,12 +1817,20 @@ class SportsbetScraper(BaseScraper):
                 if not text:
                     return []
 
-                # Search for driver challenge patterns
-                found = re.findall(r'Driver Challenge\s*[-–]\s*([A-Za-z ]+)', text)
-                if not found:
-                    found = re.findall(r'([A-Za-z ]+)\s*[-–]\s*Driver Challenge', text)
-                if not found:
-                    found = re.findall(r'([A-Za-z ]+) Driver Challenge', text)
+                # Search for driver challenge/watch patterns
+                patterns = [
+                    r'Driver Challenge\s*[-–]\s*([A-Za-z ]+)',
+                    r'([A-Za-z ]+)\s*[-–]\s*Driver Challenge',
+                    r'([A-Za-z ]+) Driver Challenge',
+                    r'Driver Watch\s*[-–]\s*([A-Za-z ]+)',
+                    r'([A-Za-z ]+)\s*[-–]\s*Driver Watch',
+                    r'([A-Za-z ]+) Driver Watch',
+                ]
+                found = []
+                for pat in patterns:
+                    found = re.findall(pat, text)
+                    if found:
+                        break
                 found = [m.strip() for m in found
                          if len(m.strip()) > 2 and 'Harness' not in m]
                 found = list(dict.fromkeys(found))
@@ -1623,7 +1839,7 @@ class SportsbetScraper(BaseScraper):
                 if not found:
                     lines = [l.strip() for l in text.split('\n') if l.strip()]
                     for i, l in enumerate(lines):
-                        if 'driver' in l.lower() or 'challenge' in l.lower():
+                        if any(kw in l.lower() for kw in ['driver', 'challenge', 'watch']):
                             self.log(f"  KEYWORD [{i}]: {l[:100]}")
 
                 for meeting in found[:MAX_MEETINGS_PER_SCRAPER]:
@@ -1633,17 +1849,28 @@ class SportsbetScraper(BaseScraper):
                             f'text="{meeting} Driver Challenge"',
                             f'text="Driver Challenge - {meeting}"',
                             f'text="{meeting} - Driver Challenge"',
+                            f'text="{meeting} Driver Watch"',
+                            f'text="Driver Watch - {meeting}"',
+                            f'text="{meeting} - Driver Watch"',
                         ]:
                             clicked = await self.safe_click(page, pat, timeout=3000)
                             if clicked:
                                 break
 
                         if not clicked:
-                            loc = page.locator(f'text=/{re.escape(meeting)}.*Driver/i').first
-                            if await loc.count() > 0:
-                                await loc.click(timeout=3000)
-                                clicked = True
-                                await random_delay(1.0, 1.5)
+                            for regex_pat in [
+                                f'text=/{re.escape(meeting)}.*Driver/i',
+                                f'text=/Driver.*{re.escape(meeting)}/i',
+                            ]:
+                                try:
+                                    loc = page.locator(regex_pat).first
+                                    if await loc.count() > 0:
+                                        await loc.click(timeout=3000)
+                                        clicked = True
+                                        await random_delay(1.0, 1.5)
+                                        break
+                                except Exception:
+                                    pass
 
                         if not clicked:
                             continue
