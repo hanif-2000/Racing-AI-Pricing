@@ -154,9 +154,9 @@ class BaseScraper:
         """Log page diagnostics when scraping returns 0 results"""
         self.log(f"DIAG ({context}): {len(lines)} lines on page")
         if lines:
-            preview = lines[:15]
+            preview = lines[:30]
             for i, l in enumerate(preview):
-                self.log(f"  line {i}: {l[:80]}")
+                self.log(f"  line {i}: {l[:100]}")
         else:
             self.log("  (empty page)")
 
@@ -582,6 +582,133 @@ class PointsBetScraper(BaseScraper):
         super().__init__()
         self.name = "PointsBet"
 
+    async def _load_specials_page(self, page) -> str:
+        """Load PointsBet racing page and navigate to specials content.
+        Returns page text or empty string if blocked."""
+
+        # Try 1: Direct specials URL
+        await self.safe_goto(page, 'https://pointsbet.com.au/racing?search=specials')
+        await random_delay(2.0, 4.0)
+
+        # Scroll to trigger lazy loading
+        for _ in range(3):
+            await page.evaluate('window.scrollBy(0, 500)')
+            await random_delay(0.3, 0.5)
+
+        text = await page.evaluate('document.body.innerText')
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        self.log(f"Page loaded: {len(lines)} lines")
+
+        if self.is_page_blocked(lines):
+            self.log("Page appears blocked")
+            self.log_diagnostics(lines, "blocked")
+            return ''
+
+        # Check if specials content loaded
+        if 'Thoroughbred Specials' in text or 'Harness Specials' in text:
+            self.log("Specials content found on direct URL")
+            return text
+        if 'Jockey Challenge' in text or 'Driver Challenge' in text:
+            self.log("Challenge content found on direct URL")
+            return text
+
+        # Try 2: Click through navigation tabs to find specials
+        self.log("Specials not on direct URL, trying nav clicks...")
+        nav_tabs = ['Specials', 'Extras', 'TODAY', 'AU/NZ']
+        for tab in nav_tabs:
+            clicked = await self.safe_click(page, f'text="{tab}"', timeout=3000)
+            if clicked:
+                self.log(f"Clicked '{tab}', checking content...")
+                await random_delay(1.5, 2.5)
+                for _ in range(3):
+                    await page.evaluate('window.scrollBy(0, 500)')
+                    await random_delay(0.2, 0.4)
+                text = await page.evaluate('document.body.innerText')
+                if ('Thoroughbred Specials' in text or 'Harness Specials' in text
+                        or 'Jockey Challenge' in text or 'Driver Challenge' in text):
+                    self.log(f"Found specials content after clicking '{tab}'")
+                    return text
+
+        # Try 3: Different URL paths
+        alt_urls = [
+            'https://pointsbet.com.au/racing/horse-racing',
+            'https://pointsbet.com.au/horse-racing',
+        ]
+        for url in alt_urls:
+            try:
+                await self.safe_goto(page, url)
+                await random_delay(2.0, 3.0)
+                for _ in range(3):
+                    await page.evaluate('window.scrollBy(0, 500)')
+                    await random_delay(0.2, 0.4)
+                text = await page.evaluate('document.body.innerText')
+                if ('Thoroughbred Specials' in text or 'Harness Specials' in text
+                        or 'Jockey Challenge' in text or 'Driver Challenge' in text):
+                    self.log(f"Found specials content at {url}")
+                    return text
+            except Exception as e:
+                self.log(f"Alt URL {url} failed: {str(e)[:40]}")
+
+        # Nothing worked - log extended diagnostics
+        self.log("Could not find specials content anywhere")
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        self.log(f"DIAG (no-specials): {len(lines)} lines on final page")
+        # Show more lines for debugging (30 instead of 15)
+        for i, l in enumerate(lines[:30]):
+            self.log(f"  line {i}: {l[:100]}")
+        # Also search for any jockey/racing keywords
+        for i, l in enumerate(lines):
+            ll = l.lower()
+            if any(kw in ll for kw in ['jockey', 'driver', 'challenge', 'special', 'harness']):
+                self.log(f"  KEYWORD at line {i}: {l[:100]}")
+        return text
+
+    def _find_meetings(self, text: str, race_type: str) -> List[str]:
+        """Find meeting names from page text using multiple patterns."""
+        names = []
+
+        if race_type == 'jockey':
+            # Pattern 1: "Meeting - Thoroughbred Specials"
+            for l in text.split('\n'):
+                if 'Thoroughbred Specials' in l and ' - ' in l:
+                    m = re.match(r'([A-Za-z\s]+)\s*-\s*Thoroughbred', l.strip())
+                    if m:
+                        n = m.group(1).strip()
+                        if n and n not in names:
+                            names.append(n)
+
+            # Pattern 2: "Jockey Challenge - Meeting"
+            if not names:
+                found = re.findall(r'Jockey Challenge\s*[-–]\s*([A-Za-z ]+)', text)
+                names = list(dict.fromkeys([m.strip() for m in found]))
+
+            # Pattern 3: "Meeting Jockey Challenge"
+            if not names:
+                found = re.findall(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+Jockey Challenge', text)
+                names = list(dict.fromkeys([m.strip() for m in found]))
+
+        elif race_type == 'driver':
+            # Pattern 1: "Meeting - Harness Specials"
+            for l in text.split('\n'):
+                if 'Harness Specials' in l and ' - ' in l:
+                    m = re.match(r'([A-Za-z\s]+)\s*-\s*Harness', l.strip())
+                    if m:
+                        n = m.group(1).strip()
+                        if n and n not in names:
+                            names.append(n)
+
+            # Pattern 2: "Driver Challenge - Meeting"
+            if not names:
+                found = re.findall(r'Driver Challenge\s*[-–]\s*([A-Za-z ]+)', text)
+                names = list(dict.fromkeys([m.strip() for m in found]))
+
+            # Pattern 3: "Meeting Driver Challenge"
+            if not names:
+                found = re.findall(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+Driver Challenge', text)
+                names = list(dict.fromkeys([m.strip() for m in found]))
+
+        return names
+
     async def scrape_jockey(self) -> List[Dict]:
         async def _do_scrape():
             meetings = []
@@ -590,44 +717,39 @@ class PointsBetScraper(BaseScraper):
                 page = await self.new_page()
                 self.log("Starting jockey...")
 
-                await self.safe_goto(
-                    page,
-                    'https://pointsbet.com.au/racing?search=specials'
-                )
-                await random_delay(1.5, 3.0)
-
-                text = await page.evaluate('document.body.innerText')
-                lines_check = [l.strip() for l in text.split('\n') if l.strip()]
-                self.log(f"Page loaded: {len(lines_check)} lines")
-                if self.is_page_blocked(lines_check):
-                    self.log("Page appears blocked")
-                    self.log_diagnostics(lines_check, "jockey-blocked")
+                text = await self._load_specials_page(page)
+                if not text:
                     return []
 
-                names = []
-                for l in text.split('\n'):
-                    if 'Thoroughbred Specials' in l and ' - ' in l:
-                        m = re.match(r'([A-Za-z\s]+)\s*-\s*Thoroughbred', l)
-                        if m:
-                            n = m.group(1).strip()
-                            if n and n not in names:
-                                names.append(n)
-                self.log(f"Found {len(names)} meetings")
-                if not names:
-                    self.log_diagnostics(lines_check, "jockey-no-meetings")
+                names = self._find_meetings(text, 'jockey')
+                self.log(f"Found {len(names)} jockey meetings")
 
                 for name in names[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
+                        # Navigate back to specials page
                         await self.safe_goto(
                             page,
                             'https://pointsbet.com.au/racing?search=specials'
                         )
                         await random_delay(1.0, 2.0)
 
+                        # Try multiple click patterns
                         clicked = await self.safe_click(
                             page,
                             f'text={name} - Thoroughbred Specials'
                         )
+                        if not clicked:
+                            clicked = await self.safe_click(
+                                page,
+                                f'text="Jockey Challenge - {name}"',
+                                timeout=3000
+                            )
+                        if not clicked:
+                            clicked = await self.safe_click(
+                                page,
+                                f'text="{name} Jockey Challenge"',
+                                timeout=3000
+                            )
                         if not clicked:
                             continue
 
@@ -661,31 +783,12 @@ class PointsBetScraper(BaseScraper):
                 page = await self.new_page()
                 self.log("Starting driver...")
 
-                await self.safe_goto(
-                    page,
-                    'https://pointsbet.com.au/racing?search=specials'
-                )
-                await random_delay(1.5, 3.0)
-
-                text = await page.evaluate('document.body.innerText')
-                lines_check = [l.strip() for l in text.split('\n') if l.strip()]
-                self.log(f"Page loaded: {len(lines_check)} lines")
-                if self.is_page_blocked(lines_check):
-                    self.log("Page appears blocked")
-                    self.log_diagnostics(lines_check, "driver-blocked")
+                text = await self._load_specials_page(page)
+                if not text:
                     return []
 
-                names = []
-                for l in text.split('\n'):
-                    if 'Harness Specials' in l and ' - ' in l:
-                        m = re.match(r'([A-Za-z\s]+)\s*-\s*Harness', l)
-                        if m:
-                            n = m.group(1).strip()
-                            if n and n not in names:
-                                names.append(n)
+                names = self._find_meetings(text, 'driver')
                 self.log(f"Found {len(names)} driver meetings")
-                if not names:
-                    self.log_diagnostics(lines_check, "driver-no-meetings")
 
                 for name in names[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
@@ -699,6 +802,18 @@ class PointsBetScraper(BaseScraper):
                             page,
                             f'text={name} - Harness Specials'
                         )
+                        if not clicked:
+                            clicked = await self.safe_click(
+                                page,
+                                f'text="Driver Challenge - {name}"',
+                                timeout=3000
+                            )
+                        if not clicked:
+                            clicked = await self.safe_click(
+                                page,
+                                f'text="{name} Driver Challenge"',
+                                timeout=3000
+                            )
                         if not clicked:
                             continue
 
