@@ -286,7 +286,9 @@ class TABtouchScraper(BaseScraper):
         self.name = "TABtouch"
 
     async def _scrape_challenge(self, challenge_type: str) -> List[Dict]:
-        """Scrape either jockey or driver challenge from TABtouch."""
+        """Scrape either jockey or driver challenge from TABtouch.
+        New approach: parse ALL meetings from the listing page directly
+        instead of clicking into each one (SPA doesn't render odds after click)."""
         if challenge_type == 'jockey':
             url = 'https://www.tabtouch.com.au/racing/jockey-challenge'
             label = 'Jockey Challenge'
@@ -306,15 +308,22 @@ class TABtouchScraper(BaseScraper):
                 await self.safe_goto(page, url)
                 await random_delay(2.0, 4.0)
 
-                # Scroll to trigger lazy loading of all meetings
-                for _ in range(6):
-                    await page.evaluate('window.scrollBy(0, 500)')
-                    await random_delay(0.3, 0.6)
+                # Scroll entire page to trigger lazy loading of ALL meetings
+                for _ in range(8):
+                    await page.evaluate('window.scrollBy(0, 600)')
+                    await random_delay(0.4, 0.7)
+
+                # Scroll back to top then down again to ensure all content loaded
+                await page.evaluate('window.scrollTo(0, 0)')
+                await random_delay(1.0, 2.0)
+                for _ in range(8):
+                    await page.evaluate('window.scrollBy(0, 600)')
+                    await random_delay(0.3, 0.5)
 
                 # Wait for SPA to fully render content
                 for attempt in range(4):
                     lines = await self.get_text_lines(page)
-                    if len(lines) > 20:
+                    if len(lines) > 30:
                         break
                     self.log(f"SPA loading ({len(lines)} lines), waiting...")
                     await random_delay(2.0, 3.0)
@@ -324,98 +333,81 @@ class TABtouchScraper(BaseScraper):
                     self.log("Page appears blocked")
                     return []
 
-                self.log(f"Page loaded: {len(lines)} lines")
-                text = '\n'.join(lines)
-                found = re.findall(
-                    rf'([A-Za-z ]+) {label} 3,2,1 Points', text)
-                found = list(dict.fromkeys([m.strip() for m in found]))
-                self.log(f"Found {len(found)} {challenge_type} meetings")
-                if not found:
-                    # Try alternate patterns
-                    found = re.findall(
-                        rf'([A-Za-z ]+) {label}', text)
-                    found = list(dict.fromkeys(
-                        [m.strip() for m in found
-                         if len(m.strip()) > 2 and '3,2,1' not in m]))
-                    if found:
-                        self.log(f"Alt pattern: {len(found)} meetings")
-                    else:
-                        self.log_diagnostics(lines, f"no-{challenge_type}-meetings")
+                self.log(f"Listing page loaded: {len(lines)} lines")
 
-                for meeting in found[:MAX_MEETINGS_PER_SCRAPER]:
-                    try:
-                        await self.safe_goto(page, url)
-                        await random_delay(2.0, 3.5)
+                # Debug: dump ALL lines of listing page to understand format
+                self.log(f"FULL PAGE DUMP ({len(lines)} lines):")
+                for i, l in enumerate(lines):
+                    self.log(f"  [{i}] {l[:150]}")
 
-                        # Scroll to make meeting visible
-                        for _ in range(4):
-                            await page.evaluate('window.scrollBy(0, 400)')
-                            await random_delay(0.2, 0.4)
+                # Parse all meetings from the listing page directly
+                meetings = self._parse_listing_page(lines, label, key,
+                                                     challenge_type)
+                self.log(f"Parsed {len(meetings)} meetings from listing page")
 
-                        # Try both patterns for clicking
-                        clicked = await self.safe_click(
-                            page,
-                            f'text="{meeting} {label} 3,2,1 Points"'
-                        )
-                        if not clicked:
-                            clicked = await self.safe_click(
-                                page,
-                                f'text="{meeting} {label}"'
-                            )
-                        if not clicked:
-                            continue
-
-                        # Wait for SPA to render odds after click
-                        await random_delay(2.5, 4.0)
-
-                        # Scroll down to trigger lazy loading of odds content
-                        for scroll_i in range(5):
-                            await page.evaluate('window.scrollBy(0, 400)')
-                            await random_delay(0.3, 0.6)
-
-                        # Wait for odds to appear (decimal like 12.34)
-                        try:
-                            await page.wait_for_selector(
-                                'text=/\\d+\\.\\d{2}/', timeout=8000
-                            )
-                            await random_delay(0.5, 1.0)
-                        except Exception:
-                            self.log(f"⚠️ {meeting}: no odds rendered after wait")
-
-                        lines = await self.get_text_lines(page)
-
-                        # Check if betting is closed for this meeting
-                        page_text = ' '.join(lines[:30]).lower()
-                        if 'betting closed' in page_text or 'dividends official' in page_text:
-                            self.log(f"⏭️ {meeting}: betting closed, skipping")
-                            continue
-
-                        # Debug: show lines around where jockey data should be
-                        self.log(f"DEBUG {meeting}: {len(lines)} lines, showing 25-65:")
-                        for di in range(25, min(65, len(lines))):
-                            self.log(f"  [{di}] {lines[di][:120]}")
-
-                        parsed = self._parse(lines)
-                        if parsed:
-                            meetings.append({
-                                'meeting': meeting.upper(),
-                                'type': challenge_type,
-                                key: parsed,
-                                'source': 'tabtouch',
-                                'country': get_country(meeting)
-                            })
-                            self.log(f"✅ {meeting}: {len(parsed)} {challenge_type}s")
-                        else:
-                            self.log(f"⚠️ {meeting}: parsed 0 {challenge_type}s")
-                            self.log_diagnostics(lines, f"parse-fail-{meeting}")
-                    except Exception as e:
-                        self.log(f"⚠️ {meeting}: {str(e)[:50]}")
-                    await random_delay(1.0, 2.5)
             finally:
                 await self.close_browser()
             return meetings
 
         return await with_retry(_do_scrape, name=f"{self.name}-{challenge_type}")
+
+    def _parse_listing_page(self, lines: List[str], label: str, key: str,
+                            challenge_type: str) -> List[Dict]:
+        """Parse all meetings and jockeys/drivers from the listing page.
+        The listing page shows all meetings with their odds inline."""
+        meetings = []
+        text = '\n'.join(lines)
+
+        # Find meeting headers
+        header_pattern = re.compile(
+            rf'([A-Za-z ]+) {label} 3,2,1 Points', re.IGNORECASE)
+        header_indices = []
+        for i, line in enumerate(lines):
+            m = header_pattern.search(line)
+            if m:
+                name = m.group(1).strip()
+                if len(name) > 2:
+                    header_indices.append((i, name))
+
+        # Deduplicate meeting names
+        seen = set()
+        unique_headers = []
+        for idx, name in header_indices:
+            if name.upper() not in seen:
+                seen.add(name.upper())
+                unique_headers.append((idx, name))
+
+        self.log(f"Found {len(unique_headers)} meeting headers in listing")
+
+        for h_idx, (start_line, meeting_name) in enumerate(unique_headers):
+            # End line is next header or end of page
+            end_line = (unique_headers[h_idx + 1][0]
+                        if h_idx + 1 < len(unique_headers)
+                        else len(lines))
+            section = lines[start_line:end_line]
+
+            # Skip closed meetings
+            section_text = ' '.join(section[:10]).lower()
+            if 'betting closed' in section_text or 'dividends official' in section_text:
+                self.log(f"⏭️ {meeting_name}: betting closed, skipping")
+                continue
+
+            # Parse jockeys from this meeting section
+            parsed = self._parse(section)
+            if parsed:
+                meetings.append({
+                    'meeting': meeting_name.upper(),
+                    'type': challenge_type,
+                    key: parsed,
+                    'source': 'tabtouch',
+                    'country': get_country(meeting_name)
+                })
+                self.log(f"✅ {meeting_name}: {len(parsed)} {challenge_type}s")
+            else:
+                self.log(f"⚠️ {meeting_name}: parsed 0 from section "
+                         f"(lines {start_line}-{end_line})")
+
+        return meetings
 
     async def scrape(self) -> List[Dict]:
         """Scrape jockey challenges (backward compat)."""
