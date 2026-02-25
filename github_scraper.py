@@ -294,13 +294,22 @@ class TABtouchScraper(BaseScraper):
                 self.log(f"Starting {challenge_type}...")
 
                 await self.safe_goto(page, url)
-                await random_delay(1.5, 3.0)
+                await random_delay(2.0, 4.0)
 
-                for _ in range(3):
+                # Scroll to trigger lazy loading of all meetings
+                for _ in range(6):
                     await page.evaluate('window.scrollBy(0, 500)')
-                    await random_delay(0.2, 0.5)
+                    await random_delay(0.3, 0.6)
 
-                lines = await self.get_text_lines(page)
+                # Wait for SPA to fully render content
+                for attempt in range(4):
+                    lines = await self.get_text_lines(page)
+                    if len(lines) > 20:
+                        break
+                    self.log(f"SPA loading ({len(lines)} lines), waiting...")
+                    await random_delay(2.0, 3.0)
+                    await page.evaluate('window.scrollBy(0, 500)')
+
                 if self.is_page_blocked(lines):
                     self.log("Page appears blocked")
                     return []
@@ -326,7 +335,12 @@ class TABtouchScraper(BaseScraper):
                 for meeting in found[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
                         await self.safe_goto(page, url)
-                        await random_delay(1.0, 2.0)
+                        await random_delay(2.0, 3.5)
+
+                        # Scroll to make meeting visible
+                        for _ in range(4):
+                            await page.evaluate('window.scrollBy(0, 400)')
+                            await random_delay(0.2, 0.4)
 
                         # Try both patterns for clicking
                         clicked = await self.safe_click(
@@ -341,7 +355,31 @@ class TABtouchScraper(BaseScraper):
                         if not clicked:
                             continue
 
+                        # Wait for SPA to render odds after click
+                        await random_delay(2.5, 4.0)
+
+                        # Scroll down to trigger lazy loading of odds content
+                        for scroll_i in range(5):
+                            await page.evaluate('window.scrollBy(0, 400)')
+                            await random_delay(0.3, 0.6)
+
+                        # Wait for odds to appear (decimal like 12.34)
+                        try:
+                            await page.wait_for_selector(
+                                'text=/\\d+\\.\\d{2}/', timeout=8000
+                            )
+                            await random_delay(0.5, 1.0)
+                        except Exception:
+                            self.log(f"⚠️ {meeting}: no odds rendered after wait")
+
                         lines = await self.get_text_lines(page)
+
+                        # Check if betting is closed for this meeting
+                        page_text = ' '.join(lines[:30]).lower()
+                        if 'betting closed' in page_text or 'dividends official' in page_text:
+                            self.log(f"⏭️ {meeting}: betting closed, skipping")
+                            continue
+
                         parsed = self._parse(lines)
                         if parsed:
                             meetings.append({
