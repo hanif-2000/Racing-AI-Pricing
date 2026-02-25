@@ -196,18 +196,21 @@ def merge_meetings(meetings, participant_key='jockeys'):
 def calculate_ai_prices(participants, margin=1.02):
     """Calculate AI prices using proportional overround removal.
 
-    Improved algorithm:
-    1. Calculate total implied probability from averaged odds (includes overround)
-    2. Use MINIMUM assumed overround (5%) when calculated overround is too low
-       - Single bookmaker markets typically have 3-8% overround
-       - With 1 source, calculated overround may be unrealistically low/high
-    3. Normalize probabilities to 100% (removes overround proportionally)
-    4. AI price = true fair odds (what the price SHOULD be without margin)
-    5. Edge = how much the best available bookmaker odds exceed fair price
-    6. Value = YES when edge >= margin threshold
+    Challenge markets (jockey/driver) typically have 15-25% overround from a
+    single bookmaker. With multiple sources, averaging naturally reduces this.
 
-    Key: Multiple bookmakers give more accurate AI prices. With only 1 source,
-    we apply a standard assumed overround to produce realistic fair prices.
+    Algorithm:
+    - Multiple bookmakers (2+): use full calculated overround (market consensus)
+    - Single bookmaker: cap overround at 10% to produce realistic AI prices
+      Challenge markets have high overround but we only want to remove the
+      bookmaker's margin, not the natural market spread.
+
+    This means with 1 source:
+    - AI prices are ~10% above market odds (realistic gap)
+    - Edge starts around -8 to -10% (beatable with a second bookmaker)
+    With 2+ sources:
+    - AI prices reflect true market consensus
+    - Edge can be positive when one bookmaker offers better odds
     """
     if not participants:
         return participants
@@ -225,13 +228,19 @@ def calculate_ai_prices(participants, margin=1.02):
     total_prob = sum(1 / p['odds'] for p in valid)
     calculated_overround = total_prob - 1.0
 
-    # When we have limited bookmaker data, the calculated overround may not
-    # reflect the true market. Apply a minimum standard overround.
-    # Typical Australian racing challenge markets: 4-8% overround.
-    MIN_OVERROUND = 0.05  # 5% minimum assumed overround
-    if avg_books < 2 and calculated_overround < MIN_OVERROUND:
-        # Single source: use standard overround for better AI prices
-        total_prob = 1.0 + MIN_OVERROUND
+    # Challenge markets have naturally high overround (15-25%).
+    # With single source, cap overround removal at 10% to keep AI prices
+    # close to actual odds. With multiple sources, use full calculation.
+    MAX_SINGLE_SOURCE_OVERROUND = 0.10  # 10% cap for 1 bookmaker
+    MIN_OVERROUND = 0.05  # 5% minimum
+
+    if avg_books < 2:
+        # Single source: cap overround to produce realistic prices
+        if calculated_overround > MAX_SINGLE_SOURCE_OVERROUND:
+            total_prob = 1.0 + MAX_SINGLE_SOURCE_OVERROUND
+        elif calculated_overround < MIN_OVERROUND:
+            total_prob = 1.0 + MIN_OVERROUND
+    # else: use calculated total_prob (multi-bookmaker consensus is accurate)
 
     overround_pct = round((total_prob - 1.0) * 100, 1)
 
@@ -243,23 +252,15 @@ def calculate_ai_prices(participants, margin=1.02):
         if odds > 0 and total_prob > 0:
             raw_prob = 1 / odds
 
-            # Fair probability: normalize to 100% (full overround removal)
+            # Fair probability: normalize to target total (100% + any remaining overround)
             fair_prob = (raw_prob / total_prob) * 100
             fair_price = round(100 / fair_prob, 2) if fair_prob > 0 else 0
 
-            # AI price = fair price (true odds, no bookmaker margin)
+            # AI price = fair price
             ai_price = fair_price
 
             # Edge: best available odds vs fair AI price
-            # Positive edge = bookmaker offers better than fair value
             edge = ((best_odds - ai_price) / ai_price * 100) if ai_price > 0 else 0
-
-            # With single bookmaker, be more conservative with value calls
-            # Require higher edge when data confidence is low
-            if num_books == 1:
-                required_edge = margin_pct + 2.0  # Extra 2% buffer for single source
-            else:
-                required_edge = margin_pct
 
             p.update({
                 'tab_odds': best_odds,
@@ -269,7 +270,7 @@ def calculate_ai_prices(participants, margin=1.02):
                 'ai_price': ai_price,
                 'fair_price': fair_price,
                 'edge': round(edge, 1),
-                'value': 'YES' if edge >= required_edge else 'NO',
+                'value': 'YES' if edge >= margin_pct else 'NO',
                 'num_bookmakers': num_books,
                 'overround': overround_pct,
             })
