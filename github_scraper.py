@@ -241,9 +241,19 @@ class BaseScraper:
         """Log page diagnostics when scraping returns 0 results"""
         self.log(f"DIAG ({context}): {len(lines)} lines on page")
         if lines:
-            preview = lines[:30]
-            for i, l in enumerate(preview):
-                self.log(f"  line {i}: {l[:100]}")
+            # Show first 30 lines
+            for i, l in enumerate(lines[:30]):
+                self.log(f"  line {i}: {l[:120]}")
+            # Show lines 30-80 (where jockey/driver data usually is)
+            if len(lines) > 30:
+                self.log(f"  --- lines 30-{min(len(lines), 80)} ---")
+                for i in range(30, min(len(lines), 80)):
+                    self.log(f"  line {i}: {lines[i][:120]}")
+            # Show last 10 lines
+            if len(lines) > 80:
+                self.log(f"  --- last 10 lines ---")
+                for i in range(max(80, len(lines) - 10), len(lines)):
+                    self.log(f"  line {i}: {lines[i][:120]}")
         else:
             self.log("  (empty page)")
 
@@ -379,6 +389,11 @@ class TABtouchScraper(BaseScraper):
                         if 'betting closed' in page_text or 'dividends official' in page_text:
                             self.log(f"⏭️ {meeting}: betting closed, skipping")
                             continue
+
+                        # Debug: show lines around where jockey data should be
+                        self.log(f"DEBUG {meeting}: {len(lines)} lines, showing 25-65:")
+                        for di in range(25, min(65, len(lines))):
+                            self.log(f"  [{di}] {lines[di][:120]}")
 
                         parsed = self._parse(lines)
                         if parsed:
