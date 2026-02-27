@@ -391,7 +391,7 @@ class TABtouchScraper(BaseScraper):
                         # Fallback 2: query DOM buttons for odds values
                         if not parsed and detail_lines:
                             try:
-                                dom_odds = await page.evaluate('''() => {
+                                dom_odds = await page.evaluate(r'''() => {
                                     const odds = [];
                                     const sels = 'button, [class*="price"],'
                                         + ' [class*="odd"], [role="button"]';
@@ -592,91 +592,149 @@ class LadbrokesScraper(BaseScraper):
                     self.log_diagnostics(lines, "jockey-too-few-lines")
                     return []
 
-                horse_meetings = self._find_section(lines, 'Horse Racing', 'Greyhounds')
-                self.log(f"Found {len(horse_meetings)} horse meetings")
-                if not horse_meetings:
-                    # Try alternate meeting detection
-                    horse_meetings = self._find_meetings_alt(lines, 'Jockey Challenge')
-                    self.log(f"Alt detection: {len(horse_meetings)} meetings")
-                if not horse_meetings:
-                    self.log_diagnostics(lines, "jockey-no-meetings")
+                # Step 1: Expand ALL accordion sections with JS
+                expanded = await page.evaluate(r'''() => {
+                    let count = 0;
+                    // Click all elements with arrow icons (accordion headers)
+                    document.querySelectorAll(
+                        '[class*="arrow"], [class*="expand"],'
+                        + ' [class*="accordion"], [class*="toggle"]'
+                    ).forEach(el => { el.click(); count++; });
+                    // Also click elements next to keyboard_arrow_down text
+                    const allEls = document.querySelectorAll('*');
+                    allEls.forEach(el => {
+                        const t = el.textContent.trim();
+                        if (t === 'keyboard_arrow_down' && el.previousElementSibling) {
+                            el.previousElementSibling.click();
+                            count++;
+                        }
+                    });
+                    return count;
+                }''')
+                self.log(f"Expanded {expanded} accordion sections")
+                await random_delay(3.0, 5.0)
 
-                for meeting in horse_meetings[:MAX_MEETINGS_PER_SCRAPER]:
+                # Scroll to load lazy content
+                for _ in range(6):
+                    await page.evaluate('window.scrollBy(0, 600)')
+                    await random_delay(0.4, 0.7)
+
+                # Step 2: Find ALL "Jockey Challenge" links/text on page
+                jc_links = await page.evaluate(r'''() => {
+                    const links = [];
+                    const els = document.querySelectorAll('a, button, [role="button"], div, span');
+                    els.forEach(el => {
+                        const t = el.textContent.trim();
+                        const re = /Jockey Challenge\s*[-–]\s*(.+)/;
+                        const m = t.match(re);
+                        if (m && t.length < 80) {
+                            links.push(t);
+                        }
+                    });
+                    // Also try reverse: "Meeting - Jockey Challenge"
+                    els.forEach(el => {
+                        const t = el.textContent.trim();
+                        const re = /(.+?)\s*[-–]\s*Jockey Challenge/;
+                        const m = t.match(re);
+                        if (m && t.length < 80 && !links.includes(t)) {
+                            links.push(t);
+                        }
+                    });
+                    return [...new Set(links)];
+                }''')
+                self.log(f"Found {len(jc_links)} JC links on page")
+
+                # Also get full page text for fallback parsing
+                full_lines = await self.get_text_lines(page)
+
+                # Step 3: Try clicking each JC link
+                for jc_text in jc_links[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
-                        await self.safe_goto(
-                            page,
-                            'https://www.ladbrokes.com.au/racing/extras')
-                        # Wait for SPA to fully render (takes ~30s)
-                        for _w in range(8):
-                            check = await self.get_text_lines(page)
-                            if len(check) > 50:
-                                break
-                            await random_delay(2.0, 3.0)
-                            await page.evaluate('window.scrollBy(0, 500)')
-                        for _ in range(4):
-                            await page.evaluate('window.scrollBy(0, 500)')
-                            await random_delay(0.3, 0.5)
+                        # Extract meeting name
+                        m = re.search(
+                            r'Jockey Challenge\s*[-–]\s*(.+)', jc_text)
+                        if not m:
+                            m = re.search(
+                                r'(.+?)\s*[-–]\s*Jockey Challenge', jc_text)
+                        if not m:
+                            continue
+                        meeting_name = m.group(1).strip()
 
-                        # Try Playwright text click first
+                        # Click the JC link
                         clicked = await self.safe_click(
-                            page, f'text="{meeting}"', timeout=10000)
+                            page, f'text="{jc_text}"', timeout=8000)
                         if not clicked:
-                            # JS fallback: walk DOM to find and click
-                            clicked = await page.evaluate('''(name) => {
-                                const w = document.createTreeWalker(
-                                    document.body, NodeFilter.SHOW_TEXT);
-                                while (w.nextNode()) {
-                                    const t = w.currentNode.textContent.trim();
-                                    if (t === name || t.startsWith(name + ' ')) {
-                                        w.currentNode.parentElement.click();
-                                        return true;
-                                    }
-                                }
-                                return false;
-                            }''', meeting)
-                            if clicked:
-                                await random_delay(1.5, 2.5)
+                            # Try partial match
+                            clicked = await self.safe_click(
+                                page,
+                                f'text="Jockey Challenge - {meeting_name}"',
+                                timeout=5000)
                         if not clicked:
-                            self.log(f"⚠️ {meeting}: click failed")
+                            self.log(f"⚠️ {meeting_name}: JC click failed")
                             continue
 
-                        await random_delay(1.5, 2.5)
-                        text = await page.evaluate('document.body.innerText')
-                        jc = f'Jockey Challenge - {meeting}'
-                        if jc in text:
-                            clicked = await self.safe_click(page, f'text="{jc}"')
+                        await random_delay(2.0, 3.0)
+                        det_lines = await self.get_text_lines(page)
+                        jockeys = self._parse_odds(det_lines)
+                        if jockeys:
+                            meetings.append({
+                                'meeting': meeting_name.upper(),
+                                'type': 'jockey',
+                                'jockeys': jockeys,
+                                'source': 'ladbrokes',
+                                'country': get_country(meeting_name)
+                            })
+                            self.log(
+                                f"✅ {meeting_name}: {len(jockeys)} jockeys")
+                        else:
+                            self.log(
+                                f"⚠️ {meeting_name}: parsed 0 jockeys")
+
+                        # Navigate back to extras for next JC link
+                        await page.go_back()
+                        await random_delay(2.0, 3.0)
+                    except Exception as e:
+                        self.log(f"⚠️ JC link error: {str(e)[:50]}")
+
+                # Step 4: Fallback - parse meetings from full page text
+                if not meetings:
+                    self.log("No JC links found, trying page parse...")
+                    horse_meetings = self._find_section(
+                        full_lines, 'Horse Racing', 'Greyhounds')
+                    if not horse_meetings:
+                        horse_meetings = self._find_meetings_alt(
+                            full_lines, 'Jockey Challenge')
+                    self.log(f"Fallback: {len(horse_meetings)} meetings")
+                    # Try direct JC navigation for each
+                    for meeting in horse_meetings[:MAX_MEETINGS_PER_SCRAPER]:
+                        try:
+                            for jc_fmt in [
+                                f'Jockey Challenge - {meeting}',
+                                f'{meeting} - Jockey Challenge',
+                                f'{meeting} Jockey Challenge',
+                            ]:
+                                clicked = await self.safe_click(
+                                    page, f'text="{jc_fmt}"', timeout=5000)
+                                if clicked:
+                                    break
                             if not clicked:
                                 continue
+                            await random_delay(2.0, 3.0)
+                            det_lines = await self.get_text_lines(page)
+                            jockeys = self._parse_odds(det_lines)
+                            if jockeys:
+                                meetings.append({
+                                    'meeting': meeting.upper(),
+                                    'type': 'jockey',
+                                    'jockeys': jockeys,
+                                    'source': 'ladbrokes',
+                                    'country': get_country(meeting)
+                                })
+                                self.log(f"✅ {meeting}: {len(jockeys)}")
+                            await page.go_back()
                             await random_delay(1.5, 2.5)
-                            lines = await self.get_text_lines(page)
-                            jockeys = self._parse_odds(lines)
-                            if jockeys:
-                                meetings.append({
-                                    'meeting': meeting.upper(),
-                                    'type': 'jockey',
-                                    'jockeys': jockeys,
-                                    'source': 'ladbrokes',
-                                    'country': get_country(meeting)
-                                })
-                                self.log(f"✅ {meeting}: {len(jockeys)} jockeys")
-                            else:
-                                self.log(f"⚠️ {meeting}: parsed 0 jockeys")
-                        else:
-                            # Content might already be on the meeting page
-                            lines = await self.get_text_lines(page)
-                            jockeys = self._parse_odds(lines)
-                            if jockeys:
-                                meetings.append({
-                                    'meeting': meeting.upper(),
-                                    'type': 'jockey',
-                                    'jockeys': jockeys,
-                                    'source': 'ladbrokes',
-                                    'country': get_country(meeting)
-                                })
-                                self.log(f"✅ {meeting}: {len(jockeys)} jockeys (direct)")
-                    except Exception as e:
-                        self.log(f"⚠️ {meeting}: {str(e)[:50]}")
-                    await random_delay(1.0, 2.5)
+                        except Exception as e:
+                            self.log(f"⚠️ {meeting}: {str(e)[:40]}")
             finally:
                 await self.close_browser()
             return meetings
@@ -698,92 +756,73 @@ class LadbrokesScraper(BaseScraper):
 
                 self.log(f"Extras page loaded: {len(lines)} lines")
                 if len(lines) < 15:
-                    self.log_diagnostics(lines, "driver-too-few-lines")
                     return []
 
-                harness = self._find_harness(lines)
-                self.log(f"Found {len(harness)} harness meetings")
-                if not harness:
-                    # Try alternate detection
-                    harness = self._find_meetings_alt(lines, 'Driver Challenge')
-                    self.log(f"Alt detection: {len(harness)} harness meetings")
-                if not harness:
-                    self.log_diagnostics(lines, "driver-no-meetings")
+                # Expand all accordions
+                await page.evaluate(r'''() => {
+                    document.querySelectorAll(
+                        '[class*="arrow"], [class*="expand"],'
+                        + ' [class*="accordion"], [class*="toggle"]'
+                    ).forEach(el => el.click());
+                    document.querySelectorAll('*').forEach(el => {
+                        if (el.textContent.trim() === 'keyboard_arrow_down'
+                            && el.previousElementSibling)
+                            el.previousElementSibling.click();
+                    });
+                }''')
+                await random_delay(3.0, 5.0)
+                for _ in range(6):
+                    await page.evaluate('window.scrollBy(0, 600)')
+                    await random_delay(0.4, 0.7)
 
-                for meeting in harness[:MAX_MEETINGS_PER_SCRAPER]:
+                # Find Driver Challenge links
+                dc_links = await page.evaluate(r'''() => {
+                    const links = [];
+                    const els = document.querySelectorAll('a, button, [role="button"], div, span');
+                    els.forEach(el => {
+                        const t = el.textContent.trim();
+                        if (/Driver Challenge\s*[-–]/.test(t) && t.length < 80)
+                            links.push(t);
+                        if (/[-–]\s*Driver Challenge/.test(t) && t.length < 80
+                            && !links.includes(t))
+                            links.push(t);
+                    });
+                    return [...new Set(links)];
+                }''')
+                self.log(f"Found {len(dc_links)} DC links")
+
+                for dc_text in dc_links[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
-                        await self.safe_goto(
-                            page,
-                            'https://www.ladbrokes.com.au/racing/extras')
-                        # Wait for SPA to fully render
-                        for _w in range(8):
-                            check = await self.get_text_lines(page)
-                            if len(check) > 50:
-                                break
-                            await random_delay(2.0, 3.0)
-                            await page.evaluate('window.scrollBy(0, 500)')
-                        for _ in range(4):
-                            await page.evaluate('window.scrollBy(0, 500)')
-                            await random_delay(0.3, 0.5)
+                        m = re.search(
+                            r'Driver Challenge\s*[-–]\s*(.+)', dc_text)
+                        if not m:
+                            m = re.search(
+                                r'(.+?)\s*[-–]\s*Driver Challenge', dc_text)
+                        if not m:
+                            continue
+                        meeting_name = m.group(1).strip()
 
                         clicked = await self.safe_click(
-                            page, f'text="{meeting}"', timeout=10000)
+                            page, f'text="{dc_text}"', timeout=8000)
                         if not clicked:
-                            # JS fallback
-                            clicked = await page.evaluate('''(name) => {
-                                const w = document.createTreeWalker(
-                                    document.body, NodeFilter.SHOW_TEXT);
-                                while (w.nextNode()) {
-                                    const t = w.currentNode.textContent.trim();
-                                    if (t === name || t.startsWith(name + ' ')) {
-                                        w.currentNode.parentElement.click();
-                                        return true;
-                                    }
-                                }
-                                return false;
-                            }''', meeting)
-                            if clicked:
-                                await random_delay(1.5, 2.5)
-                        if not clicked:
-                            self.log(f"⚠️ {meeting}: click failed")
                             continue
-
+                        await random_delay(2.0, 3.0)
+                        det_lines = await self.get_text_lines(page)
+                        drivers = self._parse_odds(det_lines)
+                        if drivers:
+                            meetings.append({
+                                'meeting': meeting_name.upper(),
+                                'type': 'driver',
+                                'drivers': drivers,
+                                'source': 'ladbrokes',
+                                'country': get_country(meeting_name)
+                            })
+                            self.log(
+                                f"✅ {meeting_name} driver: {len(drivers)}")
+                        await page.go_back()
                         await random_delay(1.5, 2.5)
-                        text = await page.evaluate('document.body.innerText')
-                        dc = f'Driver Challenge - {meeting}'
-                        if dc in text:
-                            clicked = await self.safe_click(page, f'text="{dc}"')
-                            if not clicked:
-                                continue
-                            await random_delay(1.5, 2.5)
-                            lines = await self.get_text_lines(page)
-                            drivers = self._parse_odds(lines)
-                            if drivers:
-                                meetings.append({
-                                    'meeting': meeting.upper(),
-                                    'type': 'driver',
-                                    'drivers': drivers,
-                                    'source': 'ladbrokes',
-                                    'country': get_country(meeting)
-                                })
-                                self.log(f"✅ {meeting} driver: {len(drivers)}")
-                            else:
-                                self.log(f"⚠️ {meeting}: parsed 0 drivers")
-                        else:
-                            lines = await self.get_text_lines(page)
-                            drivers = self._parse_odds(lines)
-                            if drivers:
-                                meetings.append({
-                                    'meeting': meeting.upper(),
-                                    'type': 'driver',
-                                    'drivers': drivers,
-                                    'source': 'ladbrokes',
-                                    'country': get_country(meeting)
-                                })
-                                self.log(f"✅ {meeting} driver: {len(drivers)} (direct)")
                     except Exception as e:
-                        self.log(f"⚠️ {meeting}: {str(e)[:50]}")
-                    await random_delay(1.0, 2.5)
+                        self.log(f"⚠️ DC error: {str(e)[:50]}")
             finally:
                 await self.close_browser()
             return meetings
@@ -2130,6 +2169,61 @@ class SportsbetScraper(BaseScraper):
                 self.log(f"Found {len(found)} jockey meetings")
 
                 if not found:
+                    # Try clicking "Jockey Watch" to expand section
+                    for jw_sel in [
+                        'text="Jockey Watch"', 'text="JOCKEY WATCH"',
+                        'a:has-text("Jockey Watch")',
+                        'button:has-text("Jockey Watch")',
+                    ]:
+                        jw_clicked = await self.safe_click(
+                            page, jw_sel, timeout=5000)
+                        if jw_clicked:
+                            self.log(f"Clicked '{jw_sel}' to expand")
+                            await random_delay(2.0, 3.0)
+                            for _ in range(4):
+                                await page.evaluate(
+                                    'window.scrollBy(0, 500)')
+                                await random_delay(0.3, 0.5)
+                            text = await page.evaluate(
+                                'document.body.innerText')
+                            # Re-try patterns
+                            for pat in patterns:
+                                found = re.findall(pat, text)
+                                if found:
+                                    break
+                            found = list(dict.fromkeys(
+                                [m.strip() for m in found
+                                 if len(m.strip()) > 2]))
+                            if found:
+                                self.log(f"After expand: {len(found)}")
+                                break
+                            # Try direct odds parsing on expanded page
+                            exp_lines = [l.strip() for l in
+                                         text.split('\n') if l.strip()]
+                            jockeys = self._parse(exp_lines)
+                            if jockeys:
+                                # Single expanded section = one meeting
+                                # Try to find meeting name
+                                mname = 'UNKNOWN'
+                                for ln in exp_lines:
+                                    m = re.match(
+                                        r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)'
+                                        r'\s+Jockey', ln)
+                                    if m:
+                                        mname = m.group(1).strip()
+                                        break
+                                meetings.append({
+                                    'meeting': mname.upper(),
+                                    'type': 'jockey',
+                                    'jockeys': jockeys,
+                                    'source': 'sportsbet',
+                                    'country': get_country(mname)
+                                })
+                                self.log(
+                                    f"✅ {mname}: {len(jockeys)} (expanded)")
+                            break
+
+                if not found and not meetings:
                     lines = [l.strip() for l in text.split('\n') if l.strip()]
                     for i, l in enumerate(lines):
                         if any(kw in l.lower() for kw in ['jockey', 'challenge', 'watch']):
