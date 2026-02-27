@@ -619,62 +619,69 @@ class LadbrokesScraper(BaseScraper):
                     await page.evaluate('window.scrollBy(0, 600)')
                     await random_delay(0.4, 0.7)
 
-                # Step 2: Find ALL "Jockey Challenge" links/text on page
-                jc_links = await page.evaluate(r'''() => {
-                    const links = [];
-                    const els = document.querySelectorAll('a, button, [role="button"], div, span');
-                    els.forEach(el => {
-                        const t = el.textContent.trim();
-                        const re = /Jockey Challenge\s*[-–]\s*(.+)/;
-                        const m = t.match(re);
-                        if (m && t.length < 80) {
-                            links.push(t);
+                # Step 2: Find all <a> tags with JC hrefs or text
+                jc_hrefs = await page.evaluate(r'''() => {
+                    const results = [];
+                    document.querySelectorAll('a').forEach(a => {
+                        const href = a.href || '';
+                        const text = (a.innerText || '').trim();
+                        const lh = href.toLowerCase();
+                        const lt = text.toLowerCase();
+                        if (lh.includes('jockey-challenge')
+                            || (lt.includes('jockey challenge')
+                                && !lt.includes('horse racing')
+                                && text.length < 80)) {
+                            results.push({href: href, text: text});
                         }
                     });
-                    // Also try reverse: "Meeting - Jockey Challenge"
-                    els.forEach(el => {
-                        const t = el.textContent.trim();
-                        const re = /(.+?)\s*[-–]\s*Jockey Challenge/;
-                        const m = t.match(re);
-                        if (m && t.length < 80 && !links.includes(t)) {
-                            links.push(t);
-                        }
-                    });
-                    return [...new Set(links)];
+                    return results;
                 }''')
-                self.log(f"Found {len(jc_links)} JC links on page")
+                self.log(f"Found {len(jc_hrefs)} JC links on page")
 
-                # Also get full page text for fallback parsing
-                full_lines = await self.get_text_lines(page)
+                extras_url = page.url
 
-                # Step 3: Try clicking each JC link
-                for jc_text in jc_links[:MAX_MEETINGS_PER_SCRAPER]:
+                # Step 3: Navigate to each JC href directly
+                for jc in jc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
-                        # Extract meeting name
-                        m = re.search(
-                            r'Jockey Challenge\s*[-–]\s*(.+)', jc_text)
-                        if not m:
-                            m = re.search(
-                                r'(.+?)\s*[-–]\s*Jockey Challenge', jc_text)
-                        if not m:
-                            continue
-                        meeting_name = m.group(1).strip()
+                        href = jc['href']
+                        text = jc['text']
+                        # Extract meeting name from text or href
+                        meeting_name = None
+                        for pat in [
+                            r'Jockey Challenge\s*[-–]\s*(\w[\w\s]+)',
+                            r'(\w[\w\s]+?)\s*[-–]\s*Jockey Challenge',
+                        ]:
+                            m = re.search(pat, text)
+                            if m:
+                                meeting_name = m.group(1).strip()
+                                break
+                        if not meeting_name:
+                            # Try from href: .../jockey-challenge-randwick
+                            hm = re.search(
+                                r'jockey-challenge-(\w+)', href.lower())
+                            if hm:
+                                meeting_name = hm.group(1).title()
+                        if not meeting_name:
+                            meeting_name = text[:30]
+                        # Clean meeting name
+                        meeting_name = re.sub(
+                            r'keyboard_arrow\w*', '', meeting_name).strip()
+                        meeting_name = re.sub(
+                            r'\d+[smh]$', '', meeting_name).strip()
+                        meeting_name = meeting_name.rstrip(' -–')
 
-                        # Click the JC link
-                        clicked = await self.safe_click(
-                            page, f'text="{jc_text}"', timeout=8000)
-                        if not clicked:
-                            # Try partial match
-                            clicked = await self.safe_click(
-                                page,
-                                f'text="Jockey Challenge - {meeting_name}"',
-                                timeout=5000)
-                        if not clicked:
-                            self.log(f"⚠️ {meeting_name}: JC click failed")
+                        if not meeting_name or len(meeting_name) < 3:
                             continue
 
+                        self.log(f"Navigating to JC: {meeting_name} ({href[:60]})")
+                        await self.safe_goto(page, href)
                         await random_delay(2.0, 3.0)
-                        det_lines = await self.get_text_lines(page)
+                        # Wait for content
+                        for _ in range(3):
+                            det_lines = await self.get_text_lines(page)
+                            if len(det_lines) > 15:
+                                break
+                            await random_delay(1.5, 2.5)
                         jockeys = self._parse_odds(det_lines)
                         if jockeys:
                             meetings.append({
@@ -690,37 +697,49 @@ class LadbrokesScraper(BaseScraper):
                             self.log(
                                 f"⚠️ {meeting_name}: parsed 0 jockeys")
 
-                        # Navigate back to extras for next JC link
-                        await page.go_back()
+                        # Navigate back to extras
+                        await self.safe_goto(page, extras_url)
                         await random_delay(2.0, 3.0)
                     except Exception as e:
-                        self.log(f"⚠️ JC link error: {str(e)[:50]}")
+                        self.log(f"⚠️ JC href error: {str(e)[:50]}")
 
-                # Step 4: Fallback - parse meetings from full page text
+                # Step 4: Fallback - find meetings from page text,
+                # build JC URLs and navigate directly
                 if not meetings:
-                    self.log("No JC links found, trying page parse...")
+                    self.log("No JC hrefs worked, trying fallback...")
+                    full_lines = await self.get_text_lines(page)
                     horse_meetings = self._find_section(
                         full_lines, 'Horse Racing', 'Greyhounds')
                     if not horse_meetings:
                         horse_meetings = self._find_meetings_alt(
                             full_lines, 'Jockey Challenge')
                     self.log(f"Fallback: {len(horse_meetings)} meetings")
-                    # Try direct JC navigation for each
+
                     for meeting in horse_meetings[:MAX_MEETINGS_PER_SCRAPER]:
                         try:
-                            for jc_fmt in [
-                                f'Jockey Challenge - {meeting}',
-                                f'{meeting} - Jockey Challenge',
-                                f'{meeting} Jockey Challenge',
-                            ]:
-                                clicked = await self.safe_click(
-                                    page, f'text="{jc_fmt}"', timeout=5000)
-                                if clicked:
-                                    break
+                            # Click via JS - find <a> containing meeting name
+                            clicked = await page.evaluate(
+                                r'''(name) => {
+                                    const links = document.querySelectorAll('a');
+                                    for (const a of links) {
+                                        const t = (a.innerText || '').toLowerCase();
+                                        if (t.includes('jockey challenge')
+                                            && t.includes(name.toLowerCase())) {
+                                            a.click();
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                }''', meeting)
                             if not clicked:
                                 continue
+                            self.log(f"JS-clicked JC for {meeting}")
                             await random_delay(2.0, 3.0)
-                            det_lines = await self.get_text_lines(page)
+                            for _ in range(3):
+                                det_lines = await self.get_text_lines(page)
+                                if len(det_lines) > 15:
+                                    break
+                                await random_delay(1.5, 2.5)
                             jockeys = self._parse_odds(det_lines)
                             if jockeys:
                                 meetings.append({
@@ -731,7 +750,7 @@ class LadbrokesScraper(BaseScraper):
                                     'country': get_country(meeting)
                                 })
                                 self.log(f"✅ {meeting}: {len(jockeys)}")
-                            await page.go_back()
+                            await self.safe_goto(page, extras_url)
                             await random_delay(1.5, 2.5)
                         except Exception as e:
                             self.log(f"⚠️ {meeting}: {str(e)[:40]}")
@@ -775,39 +794,62 @@ class LadbrokesScraper(BaseScraper):
                     await page.evaluate('window.scrollBy(0, 600)')
                     await random_delay(0.4, 0.7)
 
-                # Find Driver Challenge links
-                dc_links = await page.evaluate(r'''() => {
-                    const links = [];
-                    const els = document.querySelectorAll('a, button, [role="button"], div, span');
-                    els.forEach(el => {
-                        const t = el.textContent.trim();
-                        if (/Driver Challenge\s*[-–]/.test(t) && t.length < 80)
-                            links.push(t);
-                        if (/[-–]\s*Driver Challenge/.test(t) && t.length < 80
-                            && !links.includes(t))
-                            links.push(t);
+                # Find Driver Challenge <a> tags by href or innerText
+                dc_hrefs = await page.evaluate(r'''() => {
+                    const results = [];
+                    document.querySelectorAll('a').forEach(a => {
+                        const href = a.href || '';
+                        const text = (a.innerText || '').trim();
+                        const lh = href.toLowerCase();
+                        const lt = text.toLowerCase();
+                        if (lh.includes('driver-challenge')
+                            || (lt.includes('driver challenge')
+                                && text.length < 80)) {
+                            results.push({href: href, text: text});
+                        }
                     });
-                    return [...new Set(links)];
+                    return results;
                 }''')
-                self.log(f"Found {len(dc_links)} DC links")
+                self.log(f"Found {len(dc_hrefs)} DC links")
 
-                for dc_text in dc_links[:MAX_MEETINGS_PER_SCRAPER]:
+                extras_url = page.url
+
+                for dc in dc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
-                        m = re.search(
-                            r'Driver Challenge\s*[-–]\s*(.+)', dc_text)
-                        if not m:
-                            m = re.search(
-                                r'(.+?)\s*[-–]\s*Driver Challenge', dc_text)
-                        if not m:
+                        href = dc['href']
+                        text = dc['text']
+                        meeting_name = None
+                        for pat in [
+                            r'Driver Challenge\s*[-–]\s*(\w[\w\s]+)',
+                            r'(\w[\w\s]+?)\s*[-–]\s*Driver Challenge',
+                        ]:
+                            m = re.search(pat, text)
+                            if m:
+                                meeting_name = m.group(1).strip()
+                                break
+                        if not meeting_name:
+                            hm = re.search(
+                                r'driver-challenge-(\w+)', href.lower())
+                            if hm:
+                                meeting_name = hm.group(1).title()
+                        if not meeting_name:
+                            meeting_name = text[:30]
+                        meeting_name = re.sub(
+                            r'keyboard_arrow\w*', '', meeting_name).strip()
+                        meeting_name = re.sub(
+                            r'\d+[smh]$', '', meeting_name).strip()
+                        meeting_name = meeting_name.rstrip(' -–')
+                        if not meeting_name or len(meeting_name) < 3:
                             continue
-                        meeting_name = m.group(1).strip()
 
-                        clicked = await self.safe_click(
-                            page, f'text="{dc_text}"', timeout=8000)
-                        if not clicked:
-                            continue
+                        self.log(f"Navigating to DC: {meeting_name}")
+                        await self.safe_goto(page, href)
                         await random_delay(2.0, 3.0)
-                        det_lines = await self.get_text_lines(page)
+                        for _ in range(3):
+                            det_lines = await self.get_text_lines(page)
+                            if len(det_lines) > 15:
+                                break
+                            await random_delay(1.5, 2.5)
                         drivers = self._parse_odds(det_lines)
                         if drivers:
                             meetings.append({
@@ -819,7 +861,7 @@ class LadbrokesScraper(BaseScraper):
                             })
                             self.log(
                                 f"✅ {meeting_name} driver: {len(drivers)}")
-                        await page.go_back()
+                        await self.safe_goto(page, extras_url)
                         await random_delay(1.5, 2.5)
                     except Exception as e:
                         self.log(f"⚠️ DC error: {str(e)[:50]}")
