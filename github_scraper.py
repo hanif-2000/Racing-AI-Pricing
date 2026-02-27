@@ -287,8 +287,7 @@ class TABtouchScraper(BaseScraper):
 
     async def _scrape_challenge(self, challenge_type: str) -> List[Dict]:
         """Scrape either jockey or driver challenge from TABtouch.
-        New approach: parse ALL meetings from the listing page directly
-        instead of clicking into each one (SPA doesn't render odds after click)."""
+        Click into each meeting from the listing page to get odds."""
         if challenge_type == 'jockey':
             url = 'https://www.tabtouch.com.au/racing/jockey-challenge'
             label = 'Jockey Challenge'
@@ -305,109 +304,87 @@ class TABtouchScraper(BaseScraper):
                 page = await self.new_page()
                 self.log(f"Starting {challenge_type}...")
 
+                # Step 1: Load listing page to find meeting names
                 await self.safe_goto(page, url)
                 await random_delay(2.0, 4.0)
-
-                # Scroll entire page to trigger lazy loading of ALL meetings
-                for _ in range(8):
-                    await page.evaluate('window.scrollBy(0, 600)')
-                    await random_delay(0.4, 0.7)
-
-                # Scroll back to top then down again to ensure all content loaded
-                await page.evaluate('window.scrollTo(0, 0)')
-                await random_delay(1.0, 2.0)
-                for _ in range(8):
-                    await page.evaluate('window.scrollBy(0, 600)')
+                for _ in range(5):
+                    await page.evaluate('window.scrollBy(0, 500)')
                     await random_delay(0.3, 0.5)
 
-                # Wait for SPA to fully render content
-                for attempt in range(4):
-                    lines = await self.get_text_lines(page)
-                    if len(lines) > 30:
-                        break
-                    self.log(f"SPA loading ({len(lines)} lines), waiting...")
-                    await random_delay(2.0, 3.0)
-                    await page.evaluate('window.scrollBy(0, 500)')
-
+                lines = await self.get_text_lines(page)
                 if self.is_page_blocked(lines):
                     self.log("Page appears blocked")
                     return []
 
-                self.log(f"Listing page loaded: {len(lines)} lines")
+                # Find meeting names from listing
+                header_pattern = re.compile(
+                    rf'([A-Za-z ]+) {label} 3,2,1 Points', re.IGNORECASE)
+                meeting_names = []
+                seen = set()
+                for line in lines:
+                    m = header_pattern.search(line)
+                    if m:
+                        name = m.group(1).strip()
+                        if len(name) > 2 and name.upper() not in seen:
+                            seen.add(name.upper())
+                            meeting_names.append(name)
 
-                # Debug: dump ALL lines of listing page to understand format
-                self.log(f"FULL PAGE DUMP ({len(lines)} lines):")
-                for i, l in enumerate(lines):
-                    self.log(f"  [{i}] {l[:150]}")
+                self.log(f"Found {len(meeting_names)} meetings on listing")
 
-                # Parse all meetings from the listing page directly
-                meetings = self._parse_listing_page(lines, label, key,
-                                                     challenge_type)
-                self.log(f"Parsed {len(meetings)} meetings from listing page")
+                # Step 2: Click into each meeting to get odds
+                for meeting_name in meeting_names:
+                    try:
+                        click_text = f'{meeting_name} {label} 3,2,1 Points'
+                        # Navigate back to listing page
+                        await self.safe_goto(page, url)
+                        await random_delay(1.5, 2.5)
+                        for _ in range(3):
+                            await page.evaluate('window.scrollBy(0, 400)')
+                            await random_delay(0.2, 0.4)
+
+                        # Click on the meeting
+                        clicked = await self.safe_click(
+                            page, f'text="{click_text}"', timeout=5000)
+                        if not clicked:
+                            self.log(f"⚠️ {meeting_name}: click failed")
+                            continue
+
+                        await random_delay(2.0, 3.5)
+
+                        # Wait for SPA to render odds
+                        for _ in range(3):
+                            await page.evaluate('window.scrollBy(0, 300)')
+                            await random_delay(0.3, 0.5)
+
+                        detail_lines = await self.get_text_lines(page)
+
+                        # Parse jockey/driver odds from detail page
+                        parsed = self._parse(detail_lines)
+                        if parsed:
+                            meetings.append({
+                                'meeting': meeting_name.upper(),
+                                'type': challenge_type,
+                                key: parsed,
+                                'source': 'tabtouch',
+                                'country': get_country(meeting_name)
+                            })
+                            self.log(f"✅ {meeting_name}: {len(parsed)} "
+                                     f"{challenge_type}s")
+                        else:
+                            self.log(f"⚠️ {meeting_name}: parsed 0 "
+                                     f"({len(detail_lines)} lines)")
+                            if not parsed and len(detail_lines) > 5:
+                                self.log_diagnostics(
+                                    detail_lines, f"{meeting_name} detail")
+
+                    except Exception as e:
+                        self.log(f"⚠️ {meeting_name}: {str(e)[:40]}")
 
             finally:
                 await self.close_browser()
             return meetings
 
         return await with_retry(_do_scrape, name=f"{self.name}-{challenge_type}")
-
-    def _parse_listing_page(self, lines: List[str], label: str, key: str,
-                            challenge_type: str) -> List[Dict]:
-        """Parse all meetings and jockeys/drivers from the listing page.
-        The listing page shows all meetings with their odds inline."""
-        meetings = []
-        text = '\n'.join(lines)
-
-        # Find meeting headers
-        header_pattern = re.compile(
-            rf'([A-Za-z ]+) {label} 3,2,1 Points', re.IGNORECASE)
-        header_indices = []
-        for i, line in enumerate(lines):
-            m = header_pattern.search(line)
-            if m:
-                name = m.group(1).strip()
-                if len(name) > 2:
-                    header_indices.append((i, name))
-
-        # Deduplicate meeting names
-        seen = set()
-        unique_headers = []
-        for idx, name in header_indices:
-            if name.upper() not in seen:
-                seen.add(name.upper())
-                unique_headers.append((idx, name))
-
-        self.log(f"Found {len(unique_headers)} meeting headers in listing")
-
-        for h_idx, (start_line, meeting_name) in enumerate(unique_headers):
-            # End line is next header or end of page
-            end_line = (unique_headers[h_idx + 1][0]
-                        if h_idx + 1 < len(unique_headers)
-                        else len(lines))
-            section = lines[start_line:end_line]
-
-            # Skip closed meetings
-            section_text = ' '.join(section[:10]).lower()
-            if 'betting closed' in section_text or 'dividends official' in section_text:
-                self.log(f"⏭️ {meeting_name}: betting closed, skipping")
-                continue
-
-            # Parse jockeys from this meeting section
-            parsed = self._parse(section)
-            if parsed:
-                meetings.append({
-                    'meeting': meeting_name.upper(),
-                    'type': challenge_type,
-                    key: parsed,
-                    'source': 'tabtouch',
-                    'country': get_country(meeting_name)
-                })
-                self.log(f"✅ {meeting_name}: {len(parsed)} {challenge_type}s")
-            else:
-                self.log(f"⚠️ {meeting_name}: parsed 0 from section "
-                         f"(lines {start_line}-{end_line})")
-
-        return meetings
 
     async def scrape(self) -> List[Dict]:
         """Scrape jockey challenges (backward compat)."""
