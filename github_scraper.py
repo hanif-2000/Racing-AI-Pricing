@@ -316,25 +316,42 @@ class TABtouchScraper(BaseScraper):
                     self.log("Page appears blocked")
                     return []
 
-                # Find meeting names from listing
-                header_pattern = re.compile(
-                    rf'([A-Za-z ]+) {label} 3,2,1 Points', re.IGNORECASE)
+                # Find meeting names from listing - try multiple patterns
+                patterns_to_try = [
+                    re.compile(rf'([A-Za-z ]+) {label} 3,2,1 Points', re.IGNORECASE),
+                    re.compile(rf'([A-Za-z ]+) {label}', re.IGNORECASE),
+                    re.compile(rf'{label}\s*[-–]\s*([A-Za-z ]+)', re.IGNORECASE),
+                    re.compile(rf'([A-Za-z ]+)\s*[-–]\s*{label}', re.IGNORECASE),
+                ]
                 meeting_names = []
                 seen = set()
-                for line in lines:
-                    m = header_pattern.search(line)
-                    if m:
-                        name = m.group(1).strip()
-                        if len(name) > 2 and name.upper() not in seen:
-                            seen.add(name.upper())
-                            meeting_names.append(name)
+                for header_pattern in patterns_to_try:
+                    for line in lines:
+                        m = header_pattern.search(line)
+                        if m:
+                            name = m.group(1).strip()
+                            skip_words = ['any other', 'most points', 'winner',
+                                          'same meeting', 'close', 'suspended']
+                            if (len(name) > 2 and name.upper() not in seen
+                                    and not any(sw in name.lower() for sw in skip_words)):
+                                seen.add(name.upper())
+                                meeting_names.append(name)
+                    if meeting_names:
+                        break
 
                 self.log(f"Found {len(meeting_names)} meetings on listing")
+
+                # Log page content for debugging if no meetings found
+                if not meeting_names and challenge_type == 'driver':
+                    self.log(f"Driver page has {len(lines)} lines. Keywords:")
+                    for i, l in enumerate(lines):
+                        ll = l.lower()
+                        if any(kw in ll for kw in ['driver', 'challenge', 'harness', 'trotter', 'pacer']):
+                            self.log(f"  [{i}]: {l[:120]}")
 
                 # Step 2: Click into each meeting to get odds
                 for meeting_name in meeting_names:
                     try:
-                        click_text = f'{meeting_name} {label} 3,2,1 Points'
                         # Navigate back to listing page
                         await self.safe_goto(page, url)
                         await random_delay(1.5, 2.5)
@@ -342,9 +359,28 @@ class TABtouchScraper(BaseScraper):
                             await page.evaluate('window.scrollBy(0, 400)')
                             await random_delay(0.2, 0.4)
 
-                        # Click on the meeting
-                        clicked = await self.safe_click(
-                            page, f'text="{click_text}"', timeout=5000)
+                        # Click on the meeting - try multiple text patterns
+                        clicked = False
+                        click_patterns = [
+                            f'{meeting_name} {label} 3,2,1 Points',
+                            f'{meeting_name} {label}',
+                            f'{label} - {meeting_name}',
+                        ]
+                        for click_text in click_patterns:
+                            clicked = await self.safe_click(
+                                page, f'text="{click_text}"', timeout=3000)
+                            if clicked:
+                                break
+                        # Try regex match as last resort
+                        if not clicked:
+                            try:
+                                loc = page.locator(
+                                    f'text=/{re.escape(meeting_name)}.*{re.escape(label)}/i').first
+                                if await loc.count() > 0:
+                                    await loc.click(timeout=3000)
+                                    clicked = True
+                            except Exception:
+                                pass
                         if not clicked:
                             self.log(f"⚠️ {meeting_name}: click failed")
                             continue
@@ -803,7 +839,10 @@ class LadbrokesScraper(BaseScraper):
                         const lh = href.toLowerCase();
                         const lt = text.toLowerCase();
                         if (lh.includes('driver-challenge')
+                            || lh.includes('driver_challenge')
                             || (lt.includes('driver challenge')
+                                && text.length < 80)
+                            || (lt.includes('driver watch')
                                 && text.length < 80)) {
                             results.push({href: href, text: text});
                         }
@@ -811,6 +850,27 @@ class LadbrokesScraper(BaseScraper):
                     return results;
                 }''')
                 self.log(f"Found {len(dc_hrefs)} DC links")
+
+                # If no DC links, try finding harness meetings from text
+                # and build direct URLs
+                if not dc_hrefs:
+                    full_lines = await self.get_text_lines(page)
+                    harness_meetings = self._find_harness(full_lines)
+                    if not harness_meetings:
+                        harness_meetings = self._find_meetings_alt(
+                            full_lines, 'Driver Challenge')
+                    self.log(f"Fallback harness meetings: {len(harness_meetings)}")
+                    # Log page content for debugging
+                    for i, l in enumerate(full_lines):
+                        ll = l.lower()
+                        if any(kw in ll for kw in ['driver', 'harness', 'challenge']):
+                            self.log(f"  DC-DBG [{i}]: {l[:100]}")
+                    for hm in harness_meetings[:MAX_MEETINGS_PER_SCRAPER]:
+                        dc_hrefs.append({
+                            'href': '',
+                            'text': f'Driver Challenge - {hm}',
+                            '_click_meeting': hm
+                        })
 
                 extras_url = page.url
 
@@ -843,7 +903,34 @@ class LadbrokesScraper(BaseScraper):
                             continue
 
                         self.log(f"Navigating to DC: {meeting_name}")
-                        await self.safe_goto(page, href)
+                        # Use href if available, otherwise JS-click
+                        if href:
+                            await self.safe_goto(page, href)
+                        elif dc.get('_click_meeting'):
+                            click_name = dc['_click_meeting']
+                            clicked = await page.evaluate(
+                                r'''(name) => {
+                                    const links = document.querySelectorAll('a');
+                                    for (const a of links) {
+                                        const t = (a.innerText || '').toLowerCase();
+                                        if (t.includes('driver challenge')
+                                            && t.includes(name.toLowerCase())) {
+                                            a.click();
+                                            return true;
+                                        }
+                                        if (t.includes('driver')
+                                            && t.includes(name.toLowerCase())) {
+                                            a.click();
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                }''', click_name)
+                            if not clicked:
+                                self.log(f"Could not click {click_name}")
+                                continue
+                        else:
+                            continue
                         await random_delay(2.0, 3.0)
                         for _ in range(3):
                             det_lines = await self.get_text_lines(page)
@@ -1286,8 +1373,55 @@ class PointsBetScraper(BaseScraper):
                                          'jockey', 'driver', 'watch']):
                 self.log(f"  [{i}]: {l[:100]}")
 
+        # Approach 4: Try clicking AU/NZ tab within specials
+        # PointsBet may show INTL specials by default, need AU/NZ filter
+        for au_sel in [
+            'text="AU/NZ"', 'text="au/nz"', 'text="AUS/NZ"',
+            'button:has-text("AU/NZ")', 'a:has-text("AU/NZ")',
+            'span:has-text("AU/NZ")', '[data-testid*="au"]',
+            'text="Australia"', 'text="Domestic"',
+        ]:
+            try:
+                el = page.locator(au_sel).first
+                if await el.count() > 0:
+                    await el.click(timeout=3000)
+                    self.log(f"Clicked AU/NZ tab: {au_sel}")
+                    await random_delay(2.0, 4.0)
+                    for _ in range(5):
+                        await page.evaluate('window.scrollBy(0, 600)')
+                        await random_delay(0.3, 0.5)
+                    text = await page.evaluate('document.body.innerText')
+                    if challenge_kw in text or specials_kw in text:
+                        self.log("Found challenge content after AU/NZ click!")
+                        return text
+                    break
+            except Exception:
+                pass
+
+        # Approach 5: Try direct challenge URLs
+        challenge_urls = [
+            f'https://pointsbet.com.au/racing/{race_type}-challenge',
+            'https://pointsbet.com.au/racing/specials/au-nz',
+            'https://pointsbet.com.au/racing?tab=specials&region=au',
+        ]
+        for curl in challenge_urls:
+            try:
+                await self.safe_goto(page, curl)
+                await random_delay(2.0, 3.0)
+                for _ in range(3):
+                    await page.evaluate('window.scrollBy(0, 500)')
+                    await random_delay(0.3, 0.5)
+                text = await page.evaluate('document.body.innerText')
+                if challenge_kw in text or specials_kw in text:
+                    self.log(f"Found content at: {curl}")
+                    return text
+            except Exception:
+                pass
+
         # Even if no challenge keyword found, return text so caller can
         # attempt to parse whatever content we got
+        text = await page.evaluate('document.body.innerText')
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
         if len(lines) > 20:
             self.log("Returning page content for best-effort parsing")
             return text
@@ -2343,7 +2477,36 @@ class SportsbetScraper(BaseScraper):
                 page = await self.new_page()
                 self.log("Starting driver...")
 
-                text = await self._navigate_to_extras(page)
+                # Try harness-racing page first (drivers are harness)
+                text = ''
+                for racing_url in [
+                    'https://www.sportsbet.com.au/harness-racing',
+                    'https://www.sportsbet.com.au/horse-racing',
+                ]:
+                    try:
+                        await self.safe_goto(page, racing_url)
+                        await random_delay(1.5, 3.0)
+                        lines = await self.get_text_lines(page)
+                        if self.is_page_blocked(lines):
+                            continue
+                        self.log(f"Loaded {racing_url} ({len(lines)} lines)")
+                        # Try clicking Specials/Extras tab
+                        if await self._click_extras_tab(page):
+                            await random_delay(2.0, 3.5)
+                            for _ in range(6):
+                                await page.evaluate('window.scrollBy(0, 600)')
+                                await random_delay(0.4, 0.7)
+                        text = await page.evaluate('document.body.innerText')
+                        if any(kw in text for kw in ['Driver Challenge', 'Driver Watch',
+                                                      'driver challenge', 'driver watch']):
+                            self.log(f"Found driver content at {racing_url}")
+                            break
+                    except Exception as e:
+                        self.log(f"URL failed: {racing_url} - {str(e)[:40]}")
+
+                if not text:
+                    # Fallback to the regular extras navigation
+                    text = await self._navigate_to_extras(page)
                 if not text:
                     return []
 
@@ -2361,8 +2524,10 @@ class SportsbetScraper(BaseScraper):
                     found = re.findall(pat, text)
                     if found:
                         break
+                # Only filter generic labels, not track names
                 found = [m.strip() for m in found
-                         if len(m.strip()) > 2 and 'Harness' not in m]
+                         if len(m.strip()) > 2
+                         and m.strip().lower() not in ('harness', 'harness racing', '')]
                 found = list(dict.fromkeys(found))
                 self.log(f"Found {len(found)} driver meetings")
 
