@@ -374,6 +374,59 @@ class TABtouchScraper(BaseScraper):
                                 self.log(f"  {meeting_name}: waiting for odds "
                                          f"(attempt {attempt+1}/6)...")
                                 await random_delay(2.0, 3.0)
+                        # Fallback 1: try textContent (captures hidden text)
+                        if not parsed and detail_lines:
+                            try:
+                                tc = await page.evaluate(
+                                    'document.body.textContent')
+                                tc_lines = [l.strip() for l in
+                                            tc.split('\n') if l.strip()]
+                                parsed = self._parse(tc_lines)
+                                if parsed:
+                                    self.log(f"  {meeting_name}: found "
+                                             f"{len(parsed)} via textContent")
+                            except Exception:
+                                pass
+
+                        # Fallback 2: query DOM buttons for odds values
+                        if not parsed and detail_lines:
+                            try:
+                                dom_odds = await page.evaluate('''() => {
+                                    const odds = [];
+                                    const sels = 'button, [class*="price"],'
+                                        + ' [class*="odd"], [role="button"]';
+                                    document.querySelectorAll(sels)
+                                        .forEach(el => {
+                                        const t = el.textContent.trim();
+                                        if (/^\d+\.\d{2}$/.test(t))
+                                            odds.push(parseFloat(t));
+                                    });
+                                    return odds;
+                                }''')
+                                if dom_odds:
+                                    names = []
+                                    np = re.compile(
+                                        r'^([A-Z][A-Z\s]+)\s+\d+')
+                                    for ln in detail_lines:
+                                        m = np.match(ln)
+                                        if m:
+                                            n = m.group(1).strip()
+                                            if ('ANY OTHER' not in n
+                                                    and len(n) > 3):
+                                                names.append(n)
+                                    valid = [o for o in dom_odds
+                                             if 1 < o < 500]
+                                    if names and len(valid) >= len(names):
+                                        parsed = [
+                                            {'name': n.title(),
+                                             'odds': valid[i]}
+                                            for i, n in enumerate(names)]
+                                        self.log(
+                                            f"  {meeting_name}: matched "
+                                            f"{len(parsed)} via DOM buttons")
+                            except Exception:
+                                pass
+
                         if parsed:
                             meetings.append({
                                 'meeting': meeting_name.upper(),
@@ -553,14 +606,38 @@ class LadbrokesScraper(BaseScraper):
                         await self.safe_goto(
                             page,
                             'https://www.ladbrokes.com.au/racing/extras')
-                        await random_delay(2.0, 3.0)
-                        # Wait for content to load again
-                        for _ in range(3):
-                            await page.evaluate('window.scrollBy(0, 400)')
+                        # Wait for SPA to fully render (takes ~30s)
+                        for _w in range(8):
+                            check = await self.get_text_lines(page)
+                            if len(check) > 50:
+                                break
+                            await random_delay(2.0, 3.0)
+                            await page.evaluate('window.scrollBy(0, 500)')
+                        for _ in range(4):
+                            await page.evaluate('window.scrollBy(0, 500)')
                             await random_delay(0.3, 0.5)
 
-                        clicked = await self.safe_click(page, f'text="{meeting}"')
+                        # Try Playwright text click first
+                        clicked = await self.safe_click(
+                            page, f'text="{meeting}"', timeout=10000)
                         if not clicked:
+                            # JS fallback: walk DOM to find and click
+                            clicked = await page.evaluate('''(name) => {
+                                const w = document.createTreeWalker(
+                                    document.body, NodeFilter.SHOW_TEXT);
+                                while (w.nextNode()) {
+                                    const t = w.currentNode.textContent.trim();
+                                    if (t === name || t.startsWith(name + ' ')) {
+                                        w.currentNode.parentElement.click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            }''', meeting)
+                            if clicked:
+                                await random_delay(1.5, 2.5)
+                        if not clicked:
+                            self.log(f"⚠️ {meeting}: click failed")
                             continue
 
                         await random_delay(1.5, 2.5)
@@ -638,13 +715,37 @@ class LadbrokesScraper(BaseScraper):
                         await self.safe_goto(
                             page,
                             'https://www.ladbrokes.com.au/racing/extras')
-                        await random_delay(2.0, 3.0)
-                        for _ in range(3):
-                            await page.evaluate('window.scrollBy(0, 400)')
+                        # Wait for SPA to fully render
+                        for _w in range(8):
+                            check = await self.get_text_lines(page)
+                            if len(check) > 50:
+                                break
+                            await random_delay(2.0, 3.0)
+                            await page.evaluate('window.scrollBy(0, 500)')
+                        for _ in range(4):
+                            await page.evaluate('window.scrollBy(0, 500)')
                             await random_delay(0.3, 0.5)
 
-                        clicked = await self.safe_click(page, f'text="{meeting}"')
+                        clicked = await self.safe_click(
+                            page, f'text="{meeting}"', timeout=10000)
                         if not clicked:
+                            # JS fallback
+                            clicked = await page.evaluate('''(name) => {
+                                const w = document.createTreeWalker(
+                                    document.body, NodeFilter.SHOW_TEXT);
+                                while (w.nextNode()) {
+                                    const t = w.currentNode.textContent.trim();
+                                    if (t === name || t.startsWith(name + ' ')) {
+                                        w.currentNode.parentElement.click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            }''', meeting)
+                            if clicked:
+                                await random_delay(1.5, 2.5)
+                        if not clicked:
+                            self.log(f"⚠️ {meeting}: click failed")
                             continue
 
                         await random_delay(1.5, 2.5)
