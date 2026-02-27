@@ -341,40 +341,75 @@ class TABScraper(BaseScraper):
     def __init__(self):
         super().__init__()
         self.name = "TAB"
-    
+
     async def get_all_jockey_data(self) -> List[Dict]:
         meetings = []
-        playwright = browser = None
+        playwright = browser = context = None
         try:
+            # Custom browser with anti-detection for TAB
             playwright = await async_playwright().start()
-            user_dir = '/tmp/tab_profile'
-            os.makedirs(user_dir, exist_ok=True)
-            browser = await playwright.chromium.launch_persistent_context(
-                user_dir, headless=False,
-                args=['--disable-blink-features=AutomationControlled'],
-                viewport={'width': 1920, 'height': 1080}, locale='en-AU', timezone_id='Australia/Sydney'
+            browser = await playwright.chromium.launch(
+                headless=True,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process'
+                ]
             )
-            page = browser.pages[0] if browser.pages else await browser.new_page()
+            context = await browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                locale='en-AU',
+                timezone_id='Australia/Sydney',
+            )
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-AU', 'en']});
+                window.chrome = { runtime: {} };
+            """)
+            page = await context.new_page()
             self.log("Starting...")
-            await page.goto("https://www.tab.com.au/sports/betting/Jockey%20Challenge/competitions/Jockey%20Challenge",
-                          wait_until='domcontentloaded', timeout=60000)
-            await asyncio.sleep(6)
-            content = await page.content()
-            if 'Access Denied' in content:
-                self.log("❌ Access Denied", "error")
+
+            # Visit home page first to establish session
+            await page.goto("https://www.tab.com.au/", wait_until='domcontentloaded', timeout=60000)
+            await asyncio.sleep(3)
+
+            # Try multiple JC URLs
+            jc_urls = [
+                "https://www.tab.com.au/racing/jockey-challenge",
+                "https://www.tab.com.au/sports/betting/Jockey%20Challenge/competitions/Jockey%20Challenge",
+                "https://www.tab.com.au/racing/extras",
+            ]
+            text = ''
+            for url in jc_urls:
+                await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                await asyncio.sleep(6)
+                content = await page.content()
+                if 'Access Denied' in content:
+                    self.log(f"❌ Access Denied at {url}", "warning")
+                    continue
+                for _ in range(3):
+                    await page.evaluate('window.scrollBy(0, 500)')
+                    await asyncio.sleep(0.3)
+                text = await page.evaluate('document.body.innerText')
+                if 'JOCK MstPts' in text:
+                    self.log(f"Found JC content at {url}")
+                    break
+                text = ''
+
+            if not text or 'JOCK MstPts' not in text:
+                self.log("❌ No JC content found", "error")
                 return []
-            for _ in range(3):
-                await page.evaluate('window.scrollBy(0, 500)')
-                await asyncio.sleep(0.3)
-            text = await page.evaluate('document.body.innerText')
-            if 'JOCK MstPts' not in text:
-                self.log("❌ No content", "error")
-                return []
+
             meetings = self._parse(text)
             self.log(f"✅ {len(meetings)} meetings")
         except Exception as e:
             self.log(f"❌ {str(e)[:50]}", "error")
         finally:
+            if context: await context.close()
             if browser: await browser.close()
             if playwright: await playwright.stop()
         return meetings

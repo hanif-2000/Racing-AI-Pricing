@@ -194,23 +194,18 @@ def merge_meetings(meetings, participant_key='jockeys'):
 
 
 def calculate_ai_prices(participants, margin=1.02):
-    """Calculate AI prices using proportional overround removal.
+    """Calculate AI prices with comparative edge for challenge markets.
 
-    Challenge markets (jockey/driver) typically have 15-25% overround from a
-    single bookmaker. With multiple sources, averaging naturally reduces this.
+    Challenge markets have 15-35% overround, making traditional fair-price
+    edge calculations always negative. Instead we use a hybrid approach:
 
-    Algorithm:
-    - Multiple bookmakers (2+): use full calculated overround (market consensus)
-    - Single bookmaker: cap overround at 10% to produce realistic AI prices
-      Challenge markets have high overround but we only want to remove the
-      bookmaker's margin, not the natural market spread.
+    AI Price: True fair price (full proportional overround removal).
+    Edge: Comparative - how much the best bookmaker beats the average.
+      - Multi-source (2+): edge = (best_odds - avg_odds) / avg_odds
+      - Single source: edge = 0 (no comparison possible)
 
-    This means with 1 source:
-    - AI prices are ~10% above market odds (realistic gap)
-    - Edge starts around -8 to -10% (beatable with a second bookmaker)
-    With 2+ sources:
-    - AI prices reflect true market consensus
-    - Edge can be positive when one bookmaker offers better odds
+    This identifies genuine value: which bookmaker is offering the best
+    deal relative to market consensus.
     """
     if not participants:
         return participants
@@ -221,46 +216,37 @@ def calculate_ai_prices(participants, margin=1.02):
     if not valid:
         return participants
 
-    # Check average number of bookmakers across participants
     avg_books = sum(p.get('num_bookmakers', 1) for p in valid) / len(valid)
 
-    # Total implied probability from averaged odds (overround included)
-    total_prob = sum(1 / p['odds'] for p in valid)
-    calculated_overround = total_prob - 1.0
-
-    # Challenge markets have naturally high overround (15-25%).
-    # With single source, cap overround removal at 10% to keep AI prices
-    # close to actual odds. With multiple sources, use full calculation.
-    MAX_SINGLE_SOURCE_OVERROUND = 0.10  # 10% cap for 1 bookmaker
-    MIN_OVERROUND = 0.05  # 5% minimum
-
-    if avg_books < 2:
-        # Single source: cap overround to produce realistic prices
-        if calculated_overround > MAX_SINGLE_SOURCE_OVERROUND:
-            total_prob = 1.0 + MAX_SINGLE_SOURCE_OVERROUND
-        elif calculated_overround < MIN_OVERROUND:
-            total_prob = 1.0 + MIN_OVERROUND
-    # else: use calculated total_prob (multi-bookmaker consensus is accurate)
-
+    # Total implied probability from averaged odds
+    total_prob = sum(1.0 / p['odds'] for p in valid)
     overround_pct = round((total_prob - 1.0) * 100, 1)
 
+    # Ensure minimum overround for calculation
+    if total_prob < 1.01:
+        total_prob = 1.01
+
     for p in participants:
-        odds = p.get('odds', 0)
+        odds = p.get('odds', 0)  # averaged odds across bookmakers
         best_odds = p.get('best_odds', odds)
         num_books = p.get('num_bookmakers', 1)
 
         if odds > 0 and total_prob > 0:
-            raw_prob = 1 / odds
+            raw_prob = 1.0 / odds
 
-            # Fair probability: normalize to target total (100% + any remaining overround)
+            # Fair probability: normalize to 100% (remove all overround)
             fair_prob = (raw_prob / total_prob) * 100
-            fair_price = round(100 / fair_prob, 2) if fair_prob > 0 else 0
+            fair_price = round(100.0 / fair_prob, 2) if fair_prob > 0 else 0
 
-            # AI price = fair price
+            # AI price = true fair price
             ai_price = fair_price
 
-            # Edge: best available odds vs fair AI price
-            edge = ((best_odds - ai_price) / ai_price * 100) if ai_price > 0 else 0
+            # Edge: comparative (best vs average) for multi-source
+            if num_books >= 2 and best_odds > odds:
+                edge = ((best_odds - odds) / odds) * 100
+            else:
+                # Single source: compare best odds to AI price (standard)
+                edge = ((best_odds - ai_price) / ai_price * 100) if ai_price > 0 else 0
 
             p.update({
                 'tab_odds': best_odds,
@@ -1054,22 +1040,65 @@ def update_tracker_margin(request):
 
 @csrf_exempt
 def auto_update_tracker(request):
-    """Auto update tracker - fetch latest from DB"""
+    """Auto update tracker - fetch latest from DB + trigger result fetch if due"""
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST required'}, status=405)
-    
+
     try:
         data = json.loads(request.body)
         meeting = data.get('meeting', '').upper()
-        
+
         try:
             tracker = LiveTrackerState.objects.get(meeting_name=meeting)
         except LiveTrackerState.DoesNotExist:
             return JsonResponse({'success': False, 'error': 'Meeting not found'}, status=404)
-        
+
+        # Trigger background result fetch if due
+        fetch_triggered = False
+        try:
+            config = AutoFetchConfig.objects.filter(
+                meeting_name=meeting, is_enabled=True
+            ).first()
+            if config and config.last_race_fetched < config.total_races:
+                from datetime import timedelta
+                now = timezone.now()
+                should_fetch = (
+                    config.last_fetch_at is None or
+                    now >= config.last_fetch_at + timedelta(seconds=config.fetch_interval_seconds)
+                )
+                if should_fetch:
+                    import threading
+                    from .auto_results import fetch_and_update_meeting
+
+                    def _bg_fetch():
+                        from django.db import close_old_connections
+                        close_old_connections()
+                        try:
+                            result = fetch_and_update_meeting(
+                                meeting,
+                                config.get_jockeys_list(),
+                                config.last_race_fetched
+                            )
+                            if result.get('success'):
+                                config.last_fetch_at = timezone.now()
+                                config.last_race_fetched = result.get('last_race', config.last_race_fetched)
+                                config.save()
+                                logger.info(f"[AutoUpdate Fetch] {meeting}: {result.get('new_races', 0)} new races")
+                        except Exception as e:
+                            logger.error(f"[AutoUpdate Fetch] {meeting} error: {e}")
+                        finally:
+                            close_old_connections()
+
+                    t = threading.Thread(target=_bg_fetch, daemon=True)
+                    t.start()
+                    fetch_triggered = True
+        except Exception as e:
+            logger.warning(f"[AutoUpdate] fetch trigger error: {e}")
+
+        # Return current state from DB
         participants = tracker.get_participants()
         leaderboard = _build_leaderboard(participants, tracker.margin)
-        
+
         return JsonResponse({
             'success': True,
             'meeting': tracker.meeting_name,
@@ -1080,9 +1109,10 @@ def auto_update_tracker(request):
             'races_remaining': tracker.total_races - tracker.races_completed,
             'leaderboard': leaderboard,
             'race_results': tracker.get_race_results(),
-            'updated_at': tracker.updated_at.isoformat()
+            'updated_at': tracker.updated_at.isoformat(),
+            'fetch_triggered': fetch_triggered
         })
-        
+
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
