@@ -177,6 +177,52 @@ class TABtouchScraper(BaseScraper):
             if playwright: await playwright.stop()
         return meetings
     
+    async def get_all_driver_data(self) -> List[Dict]:
+        meetings = []
+        playwright = browser = context = None
+        try:
+            playwright, browser, context = await self.get_browser()
+            page = await context.new_page()
+            self.log("Starting driver...")
+            await page.goto('https://www.tabtouch.com.au/racing/driver-challenge', timeout=self.timeout)
+            await asyncio.sleep(self.wait_medium)
+
+            for _ in range(3):
+                await page.evaluate('window.scrollBy(0, 500)')
+                await asyncio.sleep(0.3)
+
+            lines = await self.get_text_lines(page)
+            text = '\n'.join(lines)
+            found = re.findall(r'([A-Za-z ]+) Driver Challenge 3,2,1 Points', text)
+            found = list(dict.fromkeys([m.strip() for m in found]))
+            self.log(f"Found {len(found)} driver meetings")
+
+            for meeting in found:
+                try:
+                    await page.goto('https://www.tabtouch.com.au/racing/driver-challenge', timeout=self.timeout)
+                    await asyncio.sleep(self.wait_short)
+                    for _ in range(3):
+                        await page.evaluate('window.scrollBy(0, 400)')
+                        await asyncio.sleep(0.2)
+                    await page.click(f'text="{meeting} Driver Challenge 3,2,1 Points"', timeout=5000)
+                    await asyncio.sleep(self.wait_medium)
+                    lines = await self.get_text_lines(page)
+                    drivers = self._parse(lines)
+                    if drivers:
+                        meetings.append({
+                            'meeting': meeting.upper(), 'type': 'driver',
+                            'drivers': drivers, 'source': 'tabtouch', 'country': get_country(meeting)
+                        })
+                        self.log(f"✅ {meeting} driver: {len(drivers)}")
+                except Exception as e:
+                    self.log(f"⚠️ {meeting}: {str(e)[:30]}", "warning")
+        except Exception as e:
+            self.log(f"❌ {str(e)[:50]}", "error")
+        finally:
+            if browser: await browser.close()
+            if playwright: await playwright.stop()
+        return meetings
+
     def _parse(self, lines: List[str]) -> List[Dict]:
         jockeys = []
         p1 = re.compile(r'^([A-Z][A-Z\s]+)\s+(\d{6})\s+(\d+\.\d{2})$')
@@ -448,6 +494,117 @@ class TABScraper(BaseScraper):
                             'source': 'tab', 'country': get_country(current)})
         return meetings
 
+    async def get_all_driver_data(self) -> List[Dict]:
+        meetings = []
+        playwright = browser = context = None
+        try:
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(
+                headless=True,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process'
+                ]
+            )
+            context = await browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                locale='en-AU',
+                timezone_id='Australia/Sydney',
+            )
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-AU', 'en']});
+                window.chrome = { runtime: {} };
+            """)
+            page = await context.new_page()
+            self.log("Starting driver...")
+
+            await page.goto("https://www.tab.com.au/", wait_until='domcontentloaded', timeout=60000)
+            await asyncio.sleep(3)
+
+            dc_urls = [
+                "https://www.tab.com.au/racing/driver-challenge",
+                "https://www.tab.com.au/sports/betting/Driver%20Challenge/competitions/Driver%20Challenge",
+                "https://www.tab.com.au/racing/extras",
+            ]
+            text = ''
+            for url in dc_urls:
+                await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                await asyncio.sleep(6)
+                content = await page.content()
+                if 'Access Denied' in content:
+                    self.log(f"Access Denied at {url}", "warning")
+                    continue
+                for _ in range(3):
+                    await page.evaluate('window.scrollBy(0, 500)')
+                    await asyncio.sleep(0.3)
+                text = await page.evaluate('document.body.innerText')
+                if 'DRVR MstPts' in text or 'Driver Challenge' in text:
+                    self.log(f"Found DC content at {url}")
+                    break
+                text = ''
+
+            if not text:
+                self.log("No DC content found", "error")
+                return []
+
+            meetings = self._parse_driver(text)
+            self.log(f"✅ {len(meetings)} driver meetings")
+        except Exception as e:
+            self.log(f"❌ {str(e)[:50]}", "error")
+        finally:
+            if context: await context.close()
+            if browser: await browser.close()
+            if playwright: await playwright.stop()
+        return meetings
+
+    def _parse_driver(self, text: str) -> List[Dict]:
+        meetings = []
+        current = None
+        drivers = []
+        prev = None
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line: continue
+            if line.startswith('DRVR MstPts '):
+                rem = line.replace('DRVR MstPts ', '')
+                if rem.isupper() and not any(c.isdigit() for c in rem):
+                    if current and drivers:
+                        meetings.append({'meeting': current, 'type': 'driver', 'drivers': drivers.copy(),
+                                        'source': 'tab', 'country': get_country(current)})
+                    current, drivers, prev = rem, [], None
+                    continue
+            dc_match = re.match(r'Driver Challenge\s*[-\u2013]\s*(.+)', line, re.IGNORECASE)
+            if dc_match:
+                name = dc_match.group(1).strip().upper()
+                if current and drivers:
+                    meetings.append({'meeting': current, 'type': 'driver', 'drivers': drivers.copy(),
+                                    'source': 'tab', 'country': get_country(current)})
+                current, drivers, prev = name, [], None
+                continue
+            skip = ['Market', 'SUSP', 'Any Other', 'Bet Slip', 'MENU', 'AUDIO', 'Driver Challenge', 'DRVR MstPts']
+            if any(x.lower() in line.lower() for x in skip):
+                prev = None
+                continue
+            try:
+                odds = float(line)
+                if 1.01 < odds < 500 and prev:
+                    drivers.append({'name': prev, 'odds': odds})
+                prev = None
+            except ValueError:
+                if current and len(line) > 2 and line[0].isupper() and not line.isupper():
+                    if not any(c.isdigit() for c in line):
+                        prev = line
+        if current and drivers:
+            meetings.append({'meeting': current, 'type': 'driver', 'drivers': drivers,
+                            'source': 'tab', 'country': get_country(current)})
+        return meetings
+
 # =====================================================
 # SPORTSBET SCRAPER
 # =====================================================
@@ -509,18 +666,29 @@ class SportsbetScraper(BaseScraper):
             playwright, browser, context = await self.get_browser()
             page = await context.new_page()
             self.log("Starting driver...")
-            await page.goto('https://www.sportsbet.com.au/horse-racing', timeout=self.timeout)
-            await asyncio.sleep(self.wait_short)
-            try:
-                await page.click('text="Extras"', timeout=5000)
+            # Try harness-racing page first, then horse-racing
+            found = []
+            for base_url in [
+                'https://www.sportsbet.com.au/harness-racing',
+                'https://www.sportsbet.com.au/horse-racing',
+            ]:
+                await page.goto(base_url, timeout=self.timeout)
                 await asyncio.sleep(self.wait_short)
-            except: pass
-            for _ in range(5):
-                await page.evaluate('window.scrollBy(0, 500)')
-                await asyncio.sleep(0.2)
-            text = await page.evaluate('document.body.innerText')
-            found = re.findall(r'([A-Za-z ]+) Driver Challenge', text)
-            found = [m.strip() for m in found if 'Harness' not in m]
+                try:
+                    await page.click('text="Extras"', timeout=5000)
+                    await asyncio.sleep(self.wait_short)
+                except: pass
+                for _ in range(5):
+                    await page.evaluate('window.scrollBy(0, 500)')
+                    await asyncio.sleep(0.2)
+                text = await page.evaluate('document.body.innerText')
+                page_found = re.findall(r'([A-Za-z ]+?) Driver Challenge', text)
+                # Only filter generic labels, not track names
+                page_found = [m.strip() for m in page_found
+                              if m.strip().lower() not in ('harness', 'harness racing', '')]
+                found.extend(page_found)
+                if found:
+                    break
             found = list(dict.fromkeys(found))
             self.log(f"Found {len(found)} driver meetings")
             for meeting in found[:10]:
@@ -621,6 +789,51 @@ class ElitebetScraper(BaseScraper):
                         names.append(prev)
         return names
     
+    async def get_all_driver_data(self) -> List[Dict]:
+        meetings = []
+        playwright = browser = context = None
+        try:
+            playwright, browser, context = await self.get_browser()
+            page = await context.new_page()
+            self.log("Starting driver...")
+            await page.goto('https://www.elitebet.com.au/racing', timeout=self.timeout)
+            await asyncio.sleep(self.wait_medium)
+            # Try Harness tab first
+            harness = page.locator('text=Harness')
+            if await harness.count() > 0:
+                await harness.first.click()
+                await asyncio.sleep(self.wait_short)
+            dc = page.locator('text=Driver Challenge')
+            if await dc.count() > 0:
+                await dc.first.click()
+                await asyncio.sleep(self.wait_medium)
+            else:
+                self.log("No Driver Challenge found")
+                return []
+            lines = await self.get_text_lines(page)
+            names = self._find_meetings(lines)
+            self.log(f"Found {len(names)} driver meetings")
+            for name in names:
+                try:
+                    elem = page.locator(f'text={name}').first
+                    if await elem.count() > 0:
+                        await elem.click()
+                        await asyncio.sleep(self.wait_short)
+                        lines = await self.get_text_lines(page)
+                        drivers = self._parse(lines, name)
+                        if drivers:
+                            meetings.append({'meeting': name.upper(), 'type': 'driver',
+                                            'drivers': drivers, 'source': 'elitebet', 'country': get_country(name)})
+                            self.log(f"✅ {name} driver: {len(drivers)}")
+                except Exception as e:
+                    self.log(f"⚠️ {name}: {e}", "warning")
+        except Exception as e:
+            self.log(f"❌ {e}", "error")
+        finally:
+            if browser: await browser.close()
+            if playwright: await playwright.stop()
+        return meetings
+
     def _parse(self, lines, meeting):
         result = []
         in_m = False
@@ -756,20 +969,23 @@ async def fetch_all_data():
     
     try:
         results = await asyncio.gather(
-            TABScraper().get_all_jockey_data(),
-            ElitebetScraper().get_all_jockey_data(),
-            SportsbetScraper().get_all_jockey_data(),
-            SportsbetScraper().get_all_driver_data(),
-            TABtouchScraper().get_all_jockey_data(),
-            LadbrokesScraper().get_all_jockey_data(),
-            LadbrokesScraper().get_all_driver_data(),
-            PointsBetScraper().get_all_jockey_data(),
-            PointsBetScraper().get_all_driver_data(),
+            TABScraper().get_all_jockey_data(),       # 0 - jockey
+            TABScraper().get_all_driver_data(),        # 1 - DRIVER
+            ElitebetScraper().get_all_jockey_data(),   # 2 - jockey
+            ElitebetScraper().get_all_driver_data(),   # 3 - DRIVER
+            SportsbetScraper().get_all_jockey_data(),  # 4 - jockey
+            SportsbetScraper().get_all_driver_data(),  # 5 - DRIVER
+            TABtouchScraper().get_all_jockey_data(),   # 6 - jockey
+            TABtouchScraper().get_all_driver_data(),   # 7 - DRIVER
+            LadbrokesScraper().get_all_jockey_data(),  # 8 - jockey
+            LadbrokesScraper().get_all_driver_data(),  # 9 - DRIVER
+            PointsBetScraper().get_all_jockey_data(),  # 10 - jockey
+            PointsBetScraper().get_all_driver_data(),  # 11 - DRIVER
             return_exceptions=True
         )
-        
+
         jockey, driver = [], []
-        driver_idx = {3, 6, 8}
+        driver_idx = {1, 3, 5, 7, 9, 11}
         
         for i, data in enumerate(results):
             if isinstance(data, Exception):
