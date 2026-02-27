@@ -349,17 +349,31 @@ class TABtouchScraper(BaseScraper):
                             self.log(f"⚠️ {meeting_name}: click failed")
                             continue
 
-                        await random_delay(2.0, 3.5)
+                        await random_delay(2.0, 3.0)
 
-                        # Wait for SPA to render odds
-                        for _ in range(3):
-                            await page.evaluate('window.scrollBy(0, 300)')
-                            await random_delay(0.3, 0.5)
+                        # Wait for SPA to render odds (poll up to 15s)
+                        odds_pattern = re.compile(r'\d+\.\d{2}')
+                        detail_lines = []
+                        parsed = []
+                        for attempt in range(6):
+                            # Scroll to trigger lazy loading
+                            for _ in range(3):
+                                await page.evaluate('window.scrollBy(0, 300)')
+                                await random_delay(0.2, 0.4)
 
-                        detail_lines = await self.get_text_lines(page)
+                            detail_lines = await self.get_text_lines(page)
 
-                        # Parse jockey/driver odds from detail page
-                        parsed = self._parse(detail_lines)
+                            # Check if odds values are present on page
+                            has_odds = any(odds_pattern.search(l) for l in detail_lines)
+                            if has_odds:
+                                parsed = self._parse(detail_lines)
+                                if parsed:
+                                    break
+
+                            if attempt < 5:
+                                self.log(f"  {meeting_name}: waiting for odds "
+                                         f"(attempt {attempt+1}/6)...")
+                                await random_delay(2.0, 3.0)
                         if parsed:
                             meetings.append({
                                 'meeting': meeting_name.upper(),
@@ -434,6 +448,21 @@ class TABtouchScraper(BaseScraper):
                         jockeys.append({'name': name.title(), 'odds': odds})
                     i += 2
                     continue
+            # Pattern 4: NAME on line, selection number on next, odds after
+            # e.g. "ROCHELLE MILNES" / "508818" / "3.50"
+            p_digits = re.compile(r'^\d{4,}$')
+            if i + 2 < len(lines):
+                m4n = p3n.match(lines[i])
+                if m4n and p_digits.match(lines[i + 1]):
+                    m4o = p2o.match(lines[i + 2])
+                    if m4o:
+                        name = m4n.group(1).strip()
+                        odds = float(m4o.group(1))
+                        if (not any(s in name for s in skip_names)
+                                and 1 < odds < 500 and len(name) > 3):
+                            jockeys.append({'name': name.title(), 'odds': odds})
+                        i += 3
+                        continue
             i += 1
         return jockeys
 
