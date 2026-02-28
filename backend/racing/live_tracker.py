@@ -168,7 +168,7 @@ class LiveMeetingTracker:
             
             if prob > 0:
                 fair_price = 100 / prob
-                ai_price = fair_price * self.margin  # Use adjustable margin
+                ai_price = round(fair_price, 2)
             else:
                 ai_price = 999
             

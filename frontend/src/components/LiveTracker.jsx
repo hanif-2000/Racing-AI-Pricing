@@ -173,65 +173,88 @@ function LiveTracker({ meetings = [] }) {
         </div>
       )}
 
-      {/* Meeting Selection */}
+      {/* Meeting Selection - grouped by type */}
       <div className="meeting-selection">
-        <h3>SELECT MEETING TO TRACK</h3>
-        <div className="meetings-list">
-          {meetings.map((meeting, idx) => {
-            const isTracking = !!activeTrackers[meeting.meeting];
-            const isExpanded = expandedMeeting === meeting.meeting;
-            const type = meeting.type || (meeting.jockeys ? "jockey" : "driver");
+        {/* Jockey Challenges */}
+        {(() => {
+          const jockeyMeetings = meetings.filter(m => {
+            const t = m.type || (m.jockeys ? "jockey" : "driver");
+            return t === "jockey";
+          });
+          const driverMeetings = meetings.filter(m => {
+            const t = m.type || (m.jockeys ? "jockey" : "driver");
+            return t === "driver";
+          });
 
-            return (
-              <div
-                key={idx}
-                className={`meeting-item ${isTracking ? "tracking" : ""} ${isExpanded ? "expanded" : ""}`}
-              >
-                <div className="meeting-row" onClick={() => isTracking && toggleMeetingView(meeting.meeting)}>
-                  <div className="meeting-info">
-                    <span className="meeting-icon">
-                      {type === "jockey" ? "🏇" : "🏎️"}
-                    </span>
-                    <span className="meeting-name">{meeting.meeting}</span>
-                    <span className="country-flag">
-                      {meeting.country === "AU" ? "🇦🇺" : "🇳🇿"}
-                    </span>
-                  </div>
-                  <div className="meeting-actions">
-                    {isTracking ? (
-                      <>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleMeetingView(meeting.meeting);
-                          }}
-                          className={`view-btn ${isExpanded ? "active" : ""}`}
-                        >
-                          {isExpanded ? "Hide" : "View"}
-                        </button>
-                        {/* <button
-                          onClick={(e) => deleteTracker(meeting.meeting, e)}
-                          className="delete-btn"
-                          title="Delete tracker"
-                        >
-                          ×
-                        </button> */}
-                      </>
-                    ) : (
-                      <button
-                        onClick={() => initTracker(meeting, type)}
-                        disabled={loading}
-                        className="track-btn"
-                      >
-                        {loading ? "..." : "Track"}
-                      </button>
-                    )}
-                  </div>
+          const renderMeetingList = (list, sectionType) => (
+            <>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {sectionType === "jockey" ? "🏇" : "🏎️"}{" "}
+                {sectionType === "jockey" ? "Jockey" : "Driver"} Challenge Meetings
+                <span style={{ fontSize: '0.8em', opacity: 0.6 }}>({list.length})</span>
+              </h3>
+              {list.length === 0 ? (
+                <div style={{ padding: '12px 16px', opacity: 0.5, fontStyle: 'italic' }}>
+                  No {sectionType === "jockey" ? "gallops" : "harness"} meetings today
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              ) : (
+                <div className="meetings-list">
+                  {list.map((meeting, idx) => {
+                    const isTracking = !!activeTrackers[meeting.meeting];
+                    const isExpanded = expandedMeeting === meeting.meeting;
+
+                    return (
+                      <div
+                        key={idx}
+                        className={`meeting-item ${isTracking ? "tracking" : ""} ${isExpanded ? "expanded" : ""}`}
+                      >
+                        <div className="meeting-row" onClick={() => isTracking && toggleMeetingView(meeting.meeting)}>
+                          <div className="meeting-info">
+                            <span className="meeting-icon">
+                              {sectionType === "jockey" ? "🏇" : "🏎️"}
+                            </span>
+                            <span className="meeting-name">{meeting.meeting}</span>
+                            <span className="country-flag">
+                              {meeting.country === "AU" ? "🇦🇺" : "🇳🇿"}
+                            </span>
+                          </div>
+                          <div className="meeting-actions">
+                            {isTracking ? (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleMeetingView(meeting.meeting);
+                                }}
+                                className={`view-btn ${isExpanded ? "active" : ""}`}
+                              >
+                                {isExpanded ? "Hide" : "View"}
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => initTracker(meeting, sectionType)}
+                                disabled={loading}
+                                className="track-btn"
+                              >
+                                {loading ? "..." : "Track"}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          );
+
+          return (
+            <>
+              {renderMeetingList(jockeyMeetings, "jockey")}
+              {renderMeetingList(driverMeetings, "driver")}
+            </>
+          );
+        })()}
       </div>
 
       {/* Active Tracker Display - Collapsible */}

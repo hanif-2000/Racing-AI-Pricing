@@ -95,16 +95,24 @@ const PricesTab = ({ data, meetings, challengeType, country, setCountry }) => {
           }
         });
         
-        // Calculate edge using best odds
-        const edge = p.ai_price && bestOdds ? 
-          ((bestOdds - p.ai_price) / p.ai_price * 100).toFixed(1) : 0;
-        
+        // Calculate edge: only meaningful with 2+ bookmaker sources
+        const numSources = Object.keys(p.odds_by_source).length;
+        let edge = 0;
+        let value = '—';
+
+        if (numSources >= 2 && p.ai_price && bestOdds) {
+          // Multi-source: cross-bookmaker comparison is meaningful
+          edge = parseFloat(((bestOdds - p.ai_price) / p.ai_price * 100).toFixed(1));
+          value = edge > 0 ? 'YES' : 'NO';
+        }
+
         return {
           ...p,
           best_odds: bestOdds,
           best_source: bestSource,
-          edge: parseFloat(edge),
-          value: parseFloat(edge) > 0 ? 'YES' : 'NO'
+          num_sources: numSources,
+          edge,
+          value
         };
       });
       
@@ -262,11 +270,15 @@ const PricesTab = ({ data, meetings, challengeType, country, setCountry }) => {
                     
                     {/* Edge */}
                     <td className="edge-col">
-                      <span className={`edge-badge ${p.edge > 0 ? 'positive' : 'negative'}`}>
-                        {p.edge > 0 ? '+' : ''}{p.edge}%
-                      </span>
+                      {p.num_sources >= 2 ? (
+                        <span className={`edge-badge ${p.edge > 0 ? 'positive' : 'negative'}`}>
+                          {p.edge > 0 ? '+' : ''}{p.edge}%
+                        </span>
+                      ) : (
+                        <span className="no-value">—</span>
+                      )}
                     </td>
-                    
+
                     {/* Value */}
                     <td className="value-col">
                       {isValue ? (

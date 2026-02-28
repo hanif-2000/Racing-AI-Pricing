@@ -71,15 +71,24 @@ def receive_scrape(request):
         
         jockey_count = len(SCRAPED_DATA['jockey_challenges'])
         driver_count = len(SCRAPED_DATA['driver_challenges'])
-        
+
+        # Per-source diagnostic breakdown
+        source_breakdown = {}
+        for m in SCRAPED_DATA['jockey_challenges'] + SCRAPED_DATA['driver_challenges']:
+            src = m.get('source', 'unknown')
+            source_breakdown[src] = source_breakdown.get(src, 0) + 1
+        logger.info(f"📊 Scrape received - jockey: {jockey_count}, "
+                    f"driver: {driver_count}, sources: {source_breakdown}")
+
         save_meetings_to_db(SCRAPED_DATA)
         save_scraped_data_to_db(SCRAPED_DATA)
-        
+
         return JsonResponse({
             'success': True,
             'message': 'Data received',
             'jockey_meetings': jockey_count,
             'driver_meetings': driver_count,
+            'sources': source_breakdown,
             'last_updated': SCRAPED_DATA['last_updated']
         }, json_dumps_params={'ensure_ascii': False})
         

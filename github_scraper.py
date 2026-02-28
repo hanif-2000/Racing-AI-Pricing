@@ -393,8 +393,21 @@ class TABtouchScraper(BaseScraper):
                             self.log(f"  [{i}]: {l[:120]}")
 
                 # Step 2: Navigate to each meeting to get odds
+                consecutive_failures = 0
                 for idx, meeting_name in enumerate(meeting_names):
                     try:
+                        # Fresh page after consecutive failures
+                        # (combats SPA state degradation)
+                        if consecutive_failures >= 2:
+                            self.log(f"  Resetting page after "
+                                     f"{consecutive_failures} failures...")
+                            try:
+                                await page.close()
+                            except Exception:
+                                pass
+                            page = await self.new_page()
+                            consecutive_failures = 0
+
                         # Use direct URL if available, otherwise click
                         direct_url = meeting_hrefs.get(meeting_name)
                         if direct_url:
@@ -481,6 +494,24 @@ class TABtouchScraper(BaseScraper):
                                          f"market not available, skipping")
                                 continue
 
+                        # Click FIXED tab to ensure fixed odds display
+                        try:
+                            for fixed_sel in [
+                                'text="FIXED"', 'text="Fixed"',
+                                'button:has-text("FIXED")',
+                                '[class*="fixed" i]',
+                            ]:
+                                try:
+                                    loc = page.locator(fixed_sel).first
+                                    if await loc.count() > 0:
+                                        await loc.click(timeout=2000)
+                                        await random_delay(1.0, 2.0)
+                                        break
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+
                         # Wait for SPA to render odds (poll up to 15s)
                         odds_pattern = re.compile(r'\d+\.\d{2}')
                         detail_lines = []
@@ -505,24 +536,166 @@ class TABtouchScraper(BaseScraper):
                                          f"(attempt {attempt+1}/6)...")
                                 await random_delay(2.0, 3.0)
 
-                        # Reload fallback: if no odds found, reload page
-                        # and try again (fixes SPA state issues)
+                        # Fallback 0: comprehensive DOM extraction
+                        # Queries ALL elements for odds-like text,
+                        # including shadow DOM, data attributes, aria
+                        if not parsed and detail_lines:
+                            try:
+                                dom_data = await page.evaluate(r'''() => {
+                                    const result = {odds: [], names: [],
+                                                    rows: []};
+                                    const oddsRe = /^\$?(\d+\.\d{2})$/;
+                                    const nameRe = /^[A-Z][A-Z\s]{3,}$/;
+
+                                    // Strategy 1: walk ALL elements for
+                                    // odds text (deep traversal)
+                                    function walk(root) {
+                                        if (!root) return;
+                                        const els = root.querySelectorAll
+                                            ? root.querySelectorAll('*')
+                                            : [];
+                                        els.forEach(el => {
+                                            // Check textContent
+                                            const t = (el.textContent||'')
+                                                .trim();
+                                            const m = t.match(oddsRe);
+                                            if (m && !el.children.length) {
+                                                result.odds.push(
+                                                    parseFloat(m[1]));
+                                            }
+                                            // Check data attributes
+                                            for (const attr of
+                                                    el.attributes || []) {
+                                                if (/price|odds|win/i
+                                                        .test(attr.name)) {
+                                                    const v = parseFloat(
+                                                        attr.value);
+                                                    if (v > 1 && v < 500) {
+                                                        result.odds.push(v);
+                                                    }
+                                                }
+                                            }
+                                            // Check aria-label
+                                            const aria = el.getAttribute(
+                                                'aria-label') || '';
+                                            const am = aria.match(
+                                                /(\d+\.\d{2})/);
+                                            if (am) {
+                                                result.odds.push(
+                                                    parseFloat(am[1]));
+                                            }
+                                            // Traverse shadow DOM
+                                            if (el.shadowRoot) {
+                                                walk(el.shadowRoot);
+                                            }
+                                        });
+                                    }
+                                    walk(document.body);
+
+                                    // Strategy 2: find table rows with
+                                    // name + odds structure
+                                    const rows = document.querySelectorAll(
+                                        'tr, [class*="row"],'
+                                        + ' [class*="selection"],'
+                                        + ' [class*="runner"],'
+                                        + ' [class*="competitor"]');
+                                    rows.forEach(row => {
+                                        const cells = row.querySelectorAll(
+                                            'td, [class*="cell"],'
+                                            + ' [class*="col"],'
+                                            + ' span, div, button, a');
+                                        let name = '', odds = 0;
+                                        cells.forEach(c => {
+                                            const ct = (c.textContent||'')
+                                                .trim();
+                                            if (nameRe.test(ct) && !name) {
+                                                name = ct;
+                                            }
+                                            const om = ct.match(oddsRe);
+                                            if (om) {
+                                                odds = parseFloat(om[1]);
+                                            }
+                                        });
+                                        if (name && odds > 1 && odds < 500
+                                                && !/ANY OTHER/i.test(name)){
+                                            result.rows.push(
+                                                {name: name, odds: odds});
+                                        }
+                                    });
+
+                                    return result;
+                                }''')
+                                # Prefer structured row data
+                                if dom_data.get('rows'):
+                                    parsed = [
+                                        {'name': r['name'].title(),
+                                         'odds': r['odds']}
+                                        for r in dom_data['rows']]
+                                    self.log(
+                                        f"  {meeting_name}: found "
+                                        f"{len(parsed)} via DOM rows")
+                                elif dom_data.get('odds'):
+                                    # Match odds to names from text lines
+                                    names = []
+                                    np_re = re.compile(
+                                        r'^([A-Z][A-Z\s]+)\s+\d+')
+                                    for ln in detail_lines:
+                                        m = np_re.match(ln)
+                                        if m:
+                                            n = m.group(1).strip()
+                                            if ('ANY OTHER' not in n
+                                                    and len(n) > 3):
+                                                names.append(n)
+                                    valid = [o for o in dom_data['odds']
+                                             if 1 < o < 500]
+                                    # Deduplicate odds preserving order
+                                    seen_odds = []
+                                    for o in valid:
+                                        if o not in seen_odds:
+                                            seen_odds.append(o)
+                                    valid = seen_odds
+                                    if (names
+                                            and len(valid) >= len(names)):
+                                        parsed = [
+                                            {'name': n.title(),
+                                             'odds': valid[i]}
+                                            for i, n in enumerate(names)]
+                                        self.log(
+                                            f"  {meeting_name}: matched "
+                                            f"{len(parsed)} via DOM walk")
+                            except Exception:
+                                pass
+
+                        # Reload fallback: if no odds found, try fresh
+                        # page load (not just reload - full new page)
                         if not parsed:
                             try:
-                                self.log(f"  {meeting_name}: reloading page...")
-                                await page.reload(timeout=NAVIGATION_TIMEOUT,
-                                                  wait_until='domcontentloaded')
+                                self.log(f"  {meeting_name}: fresh page "
+                                         f"load...")
+                                target_url = (direct_url
+                                              or page.url)
                                 try:
-                                    await page.wait_for_load_state(
-                                        'networkidle', timeout=8000)
-                                except PlaywrightTimeout:
+                                    await page.close()
+                                except Exception:
                                     pass
+                                page = await self.new_page()
+                                await self.safe_goto(page, target_url)
                                 await random_delay(2.0, 3.0)
+                                # Click FIXED tab on fresh page
+                                try:
+                                    loc = page.locator(
+                                        'text="FIXED"').first
+                                    if await loc.count() > 0:
+                                        await loc.click(timeout=2000)
+                                        await random_delay(1.0, 2.0)
+                                except Exception:
+                                    pass
                                 for _ in range(3):
                                     await page.evaluate(
                                         'window.scrollBy(0, 300)')
                                     await random_delay(0.3, 0.5)
-                                detail_lines = await self.get_text_lines(page)
+                                detail_lines = await self.get_text_lines(
+                                    page)
                                 has_odds = any(odds_pattern.search(l)
                                                for l in detail_lines)
                                 if has_odds:
@@ -530,11 +703,84 @@ class TABtouchScraper(BaseScraper):
                                     if parsed:
                                         self.log(
                                             f"  {meeting_name}: found "
-                                            f"{len(parsed)} after reload")
+                                            f"{len(parsed)} after fresh "
+                                            f"page")
+                                # Try DOM extraction on fresh page too
+                                if not parsed:
+                                    try:
+                                        dom_data = await page.evaluate(
+                                            r'''() => {
+                                            const rows = [];
+                                            const oddsRe =
+                                                /^\$?(\d+\.\d{2})$/;
+                                            const nameRe =
+                                                /^[A-Z][A-Z\s]{3,}$/;
+                                            function walk(root) {
+                                                if (!root) return;
+                                                const els =
+                                                    root.querySelectorAll
+                                                    ? root.querySelectorAll(
+                                                        'tr,[class*="row"]'
+                                                        + ',[class*='
+                                                        + '"selection"]')
+                                                    : [];
+                                                els.forEach(row => {
+                                                    const cells =
+                                                        row.querySelectorAll(
+                                                        'td,span,div,'
+                                                        + 'button,a');
+                                                    let n='', o=0;
+                                                    cells.forEach(c => {
+                                                        const t =
+                                                            (c.textContent
+                                                            ||'').trim();
+                                                        if (nameRe.test(t)
+                                                            && !n) n = t;
+                                                        const m =
+                                                            t.match(
+                                                                oddsRe);
+                                                        if (m) o =
+                                                            parseFloat(
+                                                                m[1]);
+                                                    });
+                                                    if (n && o > 1
+                                                        && o < 500
+                                                        && !/ANY OTHER/i
+                                                            .test(n))
+                                                        rows.push(
+                                                            {name:n,
+                                                             odds:o});
+                                                });
+                                                const all =
+                                                    root.querySelectorAll
+                                                    ? root
+                                                        .querySelectorAll(
+                                                            '*') : [];
+                                                all.forEach(el => {
+                                                    if (el.shadowRoot)
+                                                        walk(
+                                                            el.shadowRoot);
+                                                });
+                                            }
+                                            walk(document.body);
+                                            return rows;
+                                        }''')
+                                        if dom_data:
+                                            parsed = [
+                                                {'name': r['name'].title(),
+                                                 'odds': r['odds']}
+                                                for r in dom_data]
+                                            if parsed:
+                                                self.log(
+                                                    f"  {meeting_name}: "
+                                                    f"found {len(parsed)}"
+                                                    f" via fresh page DOM")
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
 
-                        # Fallback 1: try textContent (captures hidden text)
+                        # Fallback: try textContent (captures hidden text)
                         if not parsed and detail_lines:
                             try:
                                 tc = await page.evaluate(
@@ -548,46 +794,8 @@ class TABtouchScraper(BaseScraper):
                             except Exception:
                                 pass
 
-                        # Fallback 2: query DOM buttons for odds values
-                        if not parsed and detail_lines:
-                            try:
-                                dom_odds = await page.evaluate(r'''() => {
-                                    const odds = [];
-                                    const sels = 'button, [class*="price"],'
-                                        + ' [class*="odd"], [role="button"]';
-                                    document.querySelectorAll(sels)
-                                        .forEach(el => {
-                                        const t = el.textContent.trim();
-                                        if (/^\d+\.\d{2}$/.test(t))
-                                            odds.push(parseFloat(t));
-                                    });
-                                    return odds;
-                                }''')
-                                if dom_odds:
-                                    names = []
-                                    np = re.compile(
-                                        r'^([A-Z][A-Z\s]+)\s+\d+')
-                                    for ln in detail_lines:
-                                        m = np.match(ln)
-                                        if m:
-                                            n = m.group(1).strip()
-                                            if ('ANY OTHER' not in n
-                                                    and len(n) > 3):
-                                                names.append(n)
-                                    valid = [o for o in dom_odds
-                                             if 1 < o < 500]
-                                    if names and len(valid) >= len(names):
-                                        parsed = [
-                                            {'name': n.title(),
-                                             'odds': valid[i]}
-                                            for i, n in enumerate(names)]
-                                        self.log(
-                                            f"  {meeting_name}: matched "
-                                            f"{len(parsed)} via DOM buttons")
-                            except Exception:
-                                pass
-
                         if parsed:
+                            consecutive_failures = 0
                             meetings.append({
                                 'meeting': meeting_name.upper(),
                                 'type': challenge_type,
@@ -598,13 +806,15 @@ class TABtouchScraper(BaseScraper):
                             self.log(f"✅ {meeting_name}: {len(parsed)} "
                                      f"{challenge_type}s")
                         else:
+                            consecutive_failures += 1
                             self.log(f"⚠️ {meeting_name}: parsed 0 "
                                      f"({len(detail_lines)} lines)")
-                            if not parsed and len(detail_lines) > 5:
+                            if len(detail_lines) > 5:
                                 self.log_diagnostics(
                                     detail_lines, f"{meeting_name} detail")
 
                     except Exception as e:
+                        consecutive_failures += 1
                         self.log(f"⚠️ {meeting_name}: {str(e)[:40]}")
 
             finally:
@@ -2848,6 +3058,23 @@ async def run_all_scrapers():
 
     elapsed = int((datetime.now() - start).total_seconds())
     logger.info(f"✅ Done in {elapsed}s! Jockey: {len(jockey)} | Driver: {len(driver)}")
+
+    # Per-scraper diagnostic summary
+    source_counts = {}
+    for m in jockey + driver:
+        src = m.get('source', 'unknown')
+        mtype = m.get('type', 'unknown')
+        key = f"{src} ({mtype})"
+        source_counts[key] = source_counts.get(key, 0) + 1
+
+    logger.info("📊 Per-scraper results:")
+    expected = ['tabtouch', 'tab', 'ladbrokes', 'sportsbet', 'pointsbet', 'elitebet']
+    found_sources = {m.get('source', '') for m in jockey + driver}
+    for src in sorted(source_counts):
+        logger.info(f"  {src}: {source_counts[src]} meetings")
+    for src in expected:
+        if src not in found_sources:
+            logger.warning(f"  ⚠️ {src}: 0 meetings (NO DATA)")
 
     return {
         'jockey_challenges': jockey,
