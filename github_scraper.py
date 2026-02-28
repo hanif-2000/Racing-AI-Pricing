@@ -342,6 +342,7 @@ class TABtouchScraper(BaseScraper):
                 self.log(f"Found {len(meeting_names)} meetings on listing")
 
                 # Extract meeting hrefs from listing page for direct navigation
+                # Prioritize "3,2,1 Points" links over Quinella/Jockey Wins
                 meeting_hrefs = {}
                 try:
                     href_data = await page.evaluate(r'''() => {
@@ -349,17 +350,31 @@ class TABtouchScraper(BaseScraper):
                         document.querySelectorAll('a[href]').forEach(a => {
                             const text = a.textContent.trim();
                             const href = a.href;
-                            if (text && href && (href.includes('challenge')
-                                    || href.includes('jockey')
-                                    || href.includes('driver'))) {
+                            if (text && href) {
                                 results.push({text: text, href: href});
                             }
                         });
                         return results;
                     }''')
+                    # First pass: find "3,2,1 Points" links (preferred)
                     for item in (href_data or []):
+                        txt = item['text'].lower()
+                        if '3,2,1' not in txt and 'points' not in txt:
+                            continue
                         for mn in meeting_names:
-                            if mn.lower() in item['text'].lower():
+                            if mn.lower() in txt and mn not in meeting_hrefs:
+                                meeting_hrefs[mn] = item['href']
+                                break
+                    # Second pass: fall back to any challenge link
+                    for item in (href_data or []):
+                        txt = item['text'].lower()
+                        if 'quinella' in txt or 'jockey wins' in txt:
+                            continue  # skip wrong sub-markets
+                        if not any(kw in txt for kw in [
+                                'challenge', 'jockey', 'driver']):
+                            continue
+                        for mn in meeting_names:
+                            if mn.lower() in txt and mn not in meeting_hrefs:
                                 meeting_hrefs[mn] = item['href']
                                 break
                     if meeting_hrefs:
@@ -417,25 +432,38 @@ class TABtouchScraper(BaseScraper):
 
                         await random_delay(2.0, 3.0)
 
-                        # Ensure we're on the "3,2,1 Points" tab (not
-                        # Quinella or Jockey Wins sub-markets)
-                        try:
-                            tab_label = '3,2,1 Points' if challenge_type == 'jockey' else '3,2,1 Points'
+                        # Check if we landed on wrong sub-market
+                        # (Quinella or Jockey Wins instead of 3,2,1 Points)
+                        check_lines = await self.get_text_lines(page)
+                        page_header = ' '.join(check_lines[:25]).lower()
+                        wrong_market = ('quinella' in page_header
+                                        or 'jockey wins' in page_header
+                                        or 'to ride zero' in ' '.join(
+                                            check_lines[30:45]).upper()
+                                        if len(check_lines) > 30 else False)
+                        if wrong_market:
+                            # Go back to listing and click the 3,2,1 Points link
+                            self.log(f"  {meeting_name}: wrong sub-market, "
+                                     f"looking for 3,2,1 Points...")
+                            await self.safe_goto(page, url)
+                            await random_delay(1.5, 2.5)
+                            for _ in range(3):
+                                await page.evaluate('window.scrollBy(0, 400)')
+                                await random_delay(0.2, 0.4)
+                            pts_clicked = False
                             for sel in [
-                                f'text="{tab_label}"',
-                                f'text=/3.*2.*1.*points/i',
                                 f'text="{meeting_name} {label} 3,2,1 Points"',
+                                f'text=/.*{re.escape(meeting_name)}.*3.*2.*1/i',
                             ]:
-                                try:
-                                    loc = page.locator(sel).first
-                                    if await loc.count() > 0:
-                                        await loc.click(timeout=3000)
-                                        await random_delay(1.0, 2.0)
-                                        break
-                                except Exception:
-                                    continue
-                        except Exception:
-                            pass
+                                pts_clicked = await self.safe_click(
+                                    page, sel, timeout=3000)
+                                if pts_clicked:
+                                    await random_delay(2.0, 3.0)
+                                    break
+                            if not pts_clicked:
+                                self.log(f"  {meeting_name}: 3,2,1 Points "
+                                         f"market not available, skipping")
+                                continue
 
                         # Wait for SPA to render odds (poll up to 15s)
                         odds_pattern = re.compile(r'\d+\.\d{2}')
