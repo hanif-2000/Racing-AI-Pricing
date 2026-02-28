@@ -99,7 +99,7 @@ function App() {
                 activeTab === "live" ? "active tab-yellow" : ""
               }`}
             >
-              <span>🏇</span> Live Tracker
+              <span>🏇🏎️</span> Live Tracker
             </button>
             <button
               onClick={() => setActiveTab("tracker")}

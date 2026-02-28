@@ -603,7 +603,10 @@ def _build_leaderboard(participants, margin=1.30):
 def _recalculate_ai_prices(participants, races_completed, margin=1.02):
     """Recalculate AI prices based on current standings.
 
-    AI price = fair price (no margin multiplier).
+    Uses Bayesian smoothing: blends actual performance with prior
+    (starting odds) to prevent extreme price swings after few races.
+    Early races rely more on starting odds; later races on actual data.
+
     Margin is used as VALUE threshold only:
     margin 1.02 = 2% threshold, 1.10 = 10% threshold.
     """
@@ -613,17 +616,36 @@ def _recalculate_ai_prices(participants, races_completed, margin=1.02):
     # Convert margin to percentage threshold
     margin_pct = (margin - 1.0) * 100 if margin >= 1.0 else margin
 
+    num_participants = max(len(participants), 1)
+    # Points per race in 3,2,1 system = 6 total (3+2+1)
+    points_per_race = 6
+
     standings = []
     for name, data in participants.items():
         current_points = data.get('current_points', 0)
         rides_remaining = data.get('rides_remaining', 0)
         starting_odds = data.get('starting_odds', 0)
+        total_races = data.get('rides_total', rides_remaining + races_completed)
+
+        # Prior: expected points per race based on starting odds
+        prior_prob = (1.0 / starting_odds) if starting_odds > 0 else (1.0 / num_participants)
+        prior_avg_per_race = prior_prob * points_per_race
 
         if races_completed > 0:
-            avg_points = current_points / races_completed
-            estimated_final = current_points + (avg_points * rides_remaining)
+            # Bayesian smoothing with virtual races from prior
+            # virtual_races = prior strength (fewer = trust actual faster)
+            virtual_races = max(1, round(total_races * 0.3))
+
+            smoothed_avg = (current_points + prior_avg_per_race * virtual_races) / (
+                races_completed + virtual_races)
+            estimated_final = current_points + (smoothed_avg * rides_remaining)
         else:
-            estimated_final = 1 / starting_odds if starting_odds > 0 else 0
+            # No races yet: use starting odds probability
+            estimated_final = prior_prob
+
+        # Ensure minimum estimate (never 0 while rides remain)
+        if estimated_final < 0.001 and rides_remaining > 0:
+            estimated_final = prior_prob * 0.5
 
         standings.append({
             'name': name,
