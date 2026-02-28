@@ -341,6 +341,32 @@ class TABtouchScraper(BaseScraper):
 
                 self.log(f"Found {len(meeting_names)} meetings on listing")
 
+                # Extract meeting hrefs from listing page for direct navigation
+                meeting_hrefs = {}
+                try:
+                    href_data = await page.evaluate(r'''() => {
+                        const results = [];
+                        document.querySelectorAll('a[href]').forEach(a => {
+                            const text = a.textContent.trim();
+                            const href = a.href;
+                            if (text && href && (href.includes('challenge')
+                                    || href.includes('jockey')
+                                    || href.includes('driver'))) {
+                                results.push({text: text, href: href});
+                            }
+                        });
+                        return results;
+                    }''')
+                    for item in (href_data or []):
+                        for mn in meeting_names:
+                            if mn.lower() in item['text'].lower():
+                                meeting_hrefs[mn] = item['href']
+                                break
+                    if meeting_hrefs:
+                        self.log(f"  Extracted {len(meeting_hrefs)} direct URLs")
+                except Exception:
+                    pass
+
                 # Log page content for debugging if no meetings found
                 if not meeting_names and challenge_type == 'driver':
                     self.log(f"Driver page has {len(lines)} lines. Keywords:")
@@ -349,41 +375,45 @@ class TABtouchScraper(BaseScraper):
                         if any(kw in ll for kw in ['driver', 'challenge', 'harness', 'trotter', 'pacer']):
                             self.log(f"  [{i}]: {l[:120]}")
 
-                # Step 2: Click into each meeting to get odds
-                for meeting_name in meeting_names:
+                # Step 2: Navigate to each meeting to get odds
+                for idx, meeting_name in enumerate(meeting_names):
                     try:
-                        # Navigate back to listing page
-                        await self.safe_goto(page, url)
-                        await random_delay(1.5, 2.5)
-                        for _ in range(3):
-                            await page.evaluate('window.scrollBy(0, 400)')
-                            await random_delay(0.2, 0.4)
+                        # Use direct URL if available, otherwise click
+                        direct_url = meeting_hrefs.get(meeting_name)
+                        if direct_url:
+                            await self.safe_goto(page, direct_url)
+                        else:
+                            # Fall back to listing page click navigation
+                            await self.safe_goto(page, url)
+                            await random_delay(1.5, 2.5)
+                            for _ in range(3):
+                                await page.evaluate('window.scrollBy(0, 400)')
+                                await random_delay(0.2, 0.4)
 
-                        # Click on the meeting - try multiple text patterns
-                        clicked = False
-                        click_patterns = [
-                            f'{meeting_name} {label} 3,2,1 Points',
-                            f'{meeting_name} {label}',
-                            f'{label} - {meeting_name}',
-                        ]
-                        for click_text in click_patterns:
-                            clicked = await self.safe_click(
-                                page, f'text="{click_text}"', timeout=3000)
-                            if clicked:
-                                break
-                        # Try regex match as last resort
-                        if not clicked:
-                            try:
-                                loc = page.locator(
-                                    f'text=/{re.escape(meeting_name)}.*{re.escape(label)}/i').first
-                                if await loc.count() > 0:
-                                    await loc.click(timeout=3000)
-                                    clicked = True
-                            except Exception:
-                                pass
-                        if not clicked:
-                            self.log(f"⚠️ {meeting_name}: click failed")
-                            continue
+                            # Click on the meeting
+                            clicked = False
+                            click_patterns = [
+                                f'{meeting_name} {label} 3,2,1 Points',
+                                f'{meeting_name} {label}',
+                                f'{label} - {meeting_name}',
+                            ]
+                            for click_text in click_patterns:
+                                clicked = await self.safe_click(
+                                    page, f'text="{click_text}"', timeout=3000)
+                                if clicked:
+                                    break
+                            if not clicked:
+                                try:
+                                    loc = page.locator(
+                                        f'text=/{re.escape(meeting_name)}.*{re.escape(label)}/i').first
+                                    if await loc.count() > 0:
+                                        await loc.click(timeout=3000)
+                                        clicked = True
+                                except Exception:
+                                    pass
+                            if not clicked:
+                                self.log(f"⚠️ {meeting_name}: click failed")
+                                continue
 
                         await random_delay(2.0, 3.0)
 
@@ -410,6 +440,36 @@ class TABtouchScraper(BaseScraper):
                                 self.log(f"  {meeting_name}: waiting for odds "
                                          f"(attempt {attempt+1}/6)...")
                                 await random_delay(2.0, 3.0)
+
+                        # Reload fallback: if no odds found, reload page
+                        # and try again (fixes SPA state issues)
+                        if not parsed:
+                            try:
+                                self.log(f"  {meeting_name}: reloading page...")
+                                await page.reload(timeout=NAVIGATION_TIMEOUT,
+                                                  wait_until='domcontentloaded')
+                                try:
+                                    await page.wait_for_load_state(
+                                        'networkidle', timeout=8000)
+                                except PlaywrightTimeout:
+                                    pass
+                                await random_delay(2.0, 3.0)
+                                for _ in range(3):
+                                    await page.evaluate(
+                                        'window.scrollBy(0, 300)')
+                                    await random_delay(0.3, 0.5)
+                                detail_lines = await self.get_text_lines(page)
+                                has_odds = any(odds_pattern.search(l)
+                                               for l in detail_lines)
+                                if has_odds:
+                                    parsed = self._parse(detail_lines)
+                                    if parsed:
+                                        self.log(
+                                            f"  {meeting_name}: found "
+                                            f"{len(parsed)} after reload")
+                            except Exception:
+                                pass
+
                         # Fallback 1: try textContent (captures hidden text)
                         if not parsed and detail_lines:
                             try:
