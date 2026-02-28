@@ -1224,16 +1224,39 @@ class LadbrokesScraper(BaseScraper):
                             await page.evaluate('window.scrollBy(0, 600)')
                             await random_delay(0.4, 0.7)
 
-                        # Find JC links
+                        # Re-read page after accordion expansion
+                        lines = await self.get_text_lines(page)
+                        self.log(f"After expand: {len(lines)} lines")
+
+                        # DIAGNOSTIC: dump page content to see format
+                        for i, l in enumerate(lines[:50]):
+                            self.log(f"  EXT[{i}]: {l[:120]}")
+
+                        # Strategy 2a: Find JC links (broad search)
                         jc_hrefs = await page.evaluate(r'''() => {
                             const results = [];
+                            const bad = ['pre-commitment', 'responsible',
+                                'gambling', 'terms', 'privacy', 'help',
+                                'support', 'download', 'betstop',
+                                'deposit limit', 'self-exclu', 'cookie',
+                                'login', 'sign up', 'join'];
                             document.querySelectorAll('a').forEach(a => {
                                 const href = a.href || '';
                                 const text = (a.innerText || '').trim();
                                 const lh = href.toLowerCase();
                                 const lt = text.toLowerCase();
+                                if (lh.endsWith('#') || lh.endsWith('#/')
+                                    || bad.some(b => lt.includes(b)))
+                                    return;
                                 if (lh.includes('jockey-challenge')
+                                    || lh.includes('3-2-1')
+                                    || lh.includes('challenge')
                                     || (lt.includes('jockey challenge')
+                                        && !lt.includes('horse racing')
+                                        && text.length < 80)
+                                    || (lt.includes('3,2,1')
+                                        && lt.includes('points'))
+                                    || (lt.includes('challenge')
                                         && !lt.includes('horse racing')
                                         && text.length < 80)) {
                                     results.push({href: href, text: text});
@@ -1242,6 +1265,28 @@ class LadbrokesScraper(BaseScraper):
                             return results;
                         }''')
                         self.log(f"Extras: {len(jc_hrefs)} JC links")
+
+                        # DIAGNOSTIC: dump ALL links on page
+                        if not jc_hrefs:
+                            all_links = await page.evaluate(r'''() => {
+                                const results = [];
+                                document.querySelectorAll('a').forEach(a => {
+                                    const href = a.href || '';
+                                    const text = (a.innerText || '')
+                                        .trim().substring(0, 80);
+                                    if (text && href
+                                        && !href.endsWith('#')) {
+                                        results.push({href: href,
+                                            text: text});
+                                    }
+                                });
+                                return results.slice(0, 30);
+                            }''')
+                            self.log(f"All links on page: {len(all_links)}")
+                            for lnk in (all_links or [])[:20]:
+                                self.log(f"  LINK: {lnk['text'][:60]} -> "
+                                         f"{lnk['href'][:80]}")
+
                         extras_url = page.url
                         for jc in jc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
                             try:
@@ -1251,6 +1296,8 @@ class LadbrokesScraper(BaseScraper):
                                 for pat in [
                                     r'Jockey Challenge\s*[-–]\s*(\w[\w\s]+)',
                                     r'(\w[\w\s]+?)\s*[-–]\s*Jockey Challenge',
+                                    r'(\w[\w\s]+?)\s+3,2,1\s+Points',
+                                    r'(\w[\w\s]+?)\s+Challenge',
                                 ]:
                                     m = re.search(pat, text)
                                     if m:
@@ -1258,7 +1305,7 @@ class LadbrokesScraper(BaseScraper):
                                         break
                                 if not meeting_name:
                                     hm = re.search(
-                                        r'jockey-challenge-(\w+)',
+                                        r'(?:jockey-challenge|challenge)[/-](\w+)',
                                         href.lower())
                                     if hm:
                                         meeting_name = hm.group(1).title()
@@ -1297,7 +1344,47 @@ class LadbrokesScraper(BaseScraper):
                             except Exception as e:
                                 self.log(f"⚠️ JC href: {str(e)[:50]}")
 
-                        # Fallback: text-based meeting discovery
+                        # Strategy 2b: Try direct odds parsing from
+                        # the expanded extras page itself
+                        if not meetings:
+                            self.log("Trying direct odds parse "
+                                     "from extras page...")
+                            lines = await self.get_text_lines(page)
+                            all_odds = self._parse_odds(lines)
+                            if all_odds:
+                                # Find meeting names from text
+                                mnames = self._find_section(
+                                    lines, 'Horse Racing', 'Greyhounds')
+                                if not mnames:
+                                    mnames = self._find_meetings_alt(
+                                        lines, 'Jockey Challenge')
+                                if not mnames:
+                                    mnames = self._find_meetings_alt(
+                                        lines, 'Challenge')
+                                if mnames:
+                                    for mn in mnames[:1]:
+                                        meetings.append({
+                                            'meeting': mn.upper(),
+                                            'type': 'jockey',
+                                            'jockeys': all_odds,
+                                            'source': 'ladbrokes',
+                                            'country': get_country(mn)
+                                        })
+                                        self.log(
+                                            f"✅ {mn}: {len(all_odds)} "
+                                            f"(from extras page)")
+                                elif len(all_odds) >= 3:
+                                    meetings.append({
+                                        'meeting': 'UNKNOWN',
+                                        'type': 'jockey',
+                                        'jockeys': all_odds,
+                                        'source': 'ladbrokes',
+                                        'country': 'AU'
+                                    })
+                                    self.log(f"✅ UNKNOWN: {len(all_odds)} "
+                                             f"(from extras, no meeting name)")
+
+                        # Strategy 2c: Text-based meeting discovery
                         if not meetings:
                             self.log("No JC hrefs, trying text fallback...")
                             full_lines = await self.get_text_lines(page)
@@ -1306,22 +1393,43 @@ class LadbrokesScraper(BaseScraper):
                             if not horse_meetings:
                                 horse_meetings = self._find_meetings_alt(
                                     full_lines, 'Jockey Challenge')
+                            if not horse_meetings:
+                                horse_meetings = self._find_meetings_alt(
+                                    full_lines, 'Challenge')
                             self.log(f"Fallback: {len(horse_meetings)}")
                             for meeting in (
                                     horse_meetings[:MAX_MEETINGS_PER_SCRAPER]):
                                 try:
+                                    # Click ANY element containing
+                                    # meeting name + challenge-related
                                     clicked = await page.evaluate(
                                         r'''(name) => {
-                                            const links =
-                                                document.querySelectorAll('a');
-                                            for (const a of links) {
-                                                const t = (a.innerText || '')
+                                            const all =
+                                                document.querySelectorAll(
+                                                    'a, button, div, span');
+                                            for (const el of all) {
+                                                const t = (el.innerText || '')
                                                     .toLowerCase();
+                                                if (t.length > 200) continue;
                                                 if (t.includes(
-                                                        'jockey challenge')
-                                                    && t.includes(
-                                                        name.toLowerCase())) {
-                                                    a.click();
+                                                        name.toLowerCase())
+                                                    && (t.includes('challenge')
+                                                        || t.includes('3,2,1')
+                                                        || t.includes(
+                                                            'points'))) {
+                                                    el.click();
+                                                    return true;
+                                                }
+                                            }
+                                            // Try just meeting name
+                                            for (const el of all) {
+                                                const t = (el.innerText || '')
+                                                    .trim();
+                                                if (t === name
+                                                    || t === name
+                                                        + '\nkeyboard_arrow'
+                                                        + '_down') {
+                                                    el.click();
                                                     return true;
                                                 }
                                             }
@@ -1329,7 +1437,7 @@ class LadbrokesScraper(BaseScraper):
                                         }''', meeting)
                                     if not clicked:
                                         continue
-                                    self.log(f"JS-clicked JC: {meeting}")
+                                    self.log(f"JS-clicked: {meeting}")
                                     await random_delay(2.0, 3.0)
                                     for _ in range(3):
                                         det_lines = (
@@ -1619,18 +1727,24 @@ class LadbrokesScraper(BaseScraper):
 
     def _find_section(self, lines, start, end):
         s_idx = e_idx = None
+        start_l = start.lower()
+        end_l = end.lower()
         for i, l in enumerate(lines):
-            if l == start and i > 10:
+            if l.lower() == start_l and i > 5:
                 s_idx = i
-            elif l == end and s_idx is not None:
+            elif l.lower() == end_l and s_idx is not None:
                 e_idx = i
                 break
         result = []
-        if s_idx is not None and e_idx is not None:
-            for i in range(s_idx + 1, e_idx):
-                if i + 1 < len(lines) and lines[i + 1] == 'keyboard_arrow_down':
+        if s_idx is not None:
+            stop = e_idx or min(s_idx + 60, len(lines))
+            skip = ['intl', 'horse racing', 'harness racing',
+                    'greyhounds', 'keyboard_arrow_down']
+            for i in range(s_idx + 1, stop):
+                if (i + 1 < len(lines)
+                        and lines[i + 1] == 'keyboard_arrow_down'):
                     if (lines[i] and len(lines[i]) > 2
-                            and lines[i] not in ['INTL', 'Horse Racing']):
+                            and lines[i].lower() not in skip):
                         result.append(lines[i])
         return result
 
@@ -1773,6 +1887,17 @@ class ElitebetScraper(BaseScraper):
 
                 self.log(f"Page loaded: {len(lines)} lines")
 
+                # If very few lines, wait longer for SPA render
+                if len(lines) < 40:
+                    self.log(f"Few lines ({len(lines)}), "
+                             f"waiting for SPA...")
+                    for _ in range(8):
+                        await page.evaluate('window.scrollBy(0, 400)')
+                        await random_delay(1.0, 2.0)
+                    await random_delay(3.0, 5.0)
+                    lines = await self.get_text_lines(page)
+                    self.log(f"After extra wait: {len(lines)} lines")
+
                 # Neds/Elitebet uses same Extras format as Ladbrokes
                 # Expand all accordion sections first
                 try:
@@ -1794,7 +1919,7 @@ class ElitebetScraper(BaseScraper):
                     }''')
                     self.log(f"Expanded {expanded} accordions")
                     await random_delay(3.0, 5.0)
-                    for _ in range(6):
+                    for _ in range(8):
                         await page.evaluate('window.scrollBy(0, 600)')
                         await random_delay(0.4, 0.7)
                 except Exception:
@@ -1802,11 +1927,17 @@ class ElitebetScraper(BaseScraper):
 
                 lines = await self.get_text_lines(page)
 
-                # Strategy 1: Find JC links via href/text
+                # DIAGNOSTIC: dump page content to see format
+                self.log(f"After expand: {len(lines)} lines")
+                for i, l in enumerate(lines[:50]):
+                    self.log(f"  NEDS[{i}]: {l[:120]}")
+
+                # Strategy 1: Find JC links (broad search)
                 jc_hrefs = await page.evaluate(r'''() => {
                     const results = [];
                     const bad = ['pre-commitment', 'responsible',
-                        'gambling', 'terms', 'privacy', 'betstop'];
+                        'gambling', 'terms', 'privacy', 'betstop',
+                        'cookie', 'login', 'sign up', 'join'];
                     document.querySelectorAll('a').forEach(a => {
                         const href = a.href || '';
                         const text = (a.innerText || '').trim();
@@ -1816,7 +1947,14 @@ class ElitebetScraper(BaseScraper):
                             || bad.some(b => lt.includes(b)))
                             return;
                         if (lh.includes('jockey-challenge')
+                            || lh.includes('challenge')
+                            || lh.includes('3-2-1')
                             || (lt.includes('jockey challenge')
+                                && !lt.includes('horse racing')
+                                && text.length < 80)
+                            || (lt.includes('3,2,1')
+                                && lt.includes('points'))
+                            || (lt.includes('challenge')
                                 && !lt.includes('horse racing')
                                 && text.length < 80)) {
                             results.push({href: href, text: text});
@@ -1825,6 +1963,27 @@ class ElitebetScraper(BaseScraper):
                     return results;
                 }''')
                 self.log(f"Found {len(jc_hrefs)} JC links")
+
+                # DIAGNOSTIC: dump ALL links if none found
+                if not jc_hrefs:
+                    all_links = await page.evaluate(r'''() => {
+                        const results = [];
+                        document.querySelectorAll('a').forEach(a => {
+                            const href = a.href || '';
+                            const text = (a.innerText || '')
+                                .trim().substring(0, 80);
+                            if (text && href
+                                && !href.endsWith('#')) {
+                                results.push({href: href,
+                                    text: text});
+                            }
+                        });
+                        return results.slice(0, 30);
+                    }''')
+                    self.log(f"All links on page: {len(all_links)}")
+                    for lnk in (all_links or [])[:20]:
+                        self.log(f"  LINK: {lnk['text'][:60]} -> "
+                                 f"{lnk['href'][:80]}")
 
                 extras_url = page.url
 
@@ -1837,6 +1996,8 @@ class ElitebetScraper(BaseScraper):
                         for pat in [
                             r'Jockey Challenge\s*[-–]\s*(\w[\w\s]+)',
                             r'(\w[\w\s]+?)\s*[-–]\s*Jockey Challenge',
+                            r'(\w[\w\s]+?)\s+3,2,1\s+Points',
+                            r'(\w[\w\s]+?)\s+Challenge',
                         ]:
                             m = re.search(pat, text)
                             if m:
@@ -1844,7 +2005,8 @@ class ElitebetScraper(BaseScraper):
                                 break
                         if not meeting_name:
                             hm = re.search(
-                                r'jockey-challenge[/-](\w+)',
+                                r'(?:jockey-challenge|challenge)'
+                                r'[/-](\w+)',
                                 href.lower())
                             if hm:
                                 meeting_name = hm.group(1).title()
@@ -1880,28 +2042,73 @@ class ElitebetScraper(BaseScraper):
                     except Exception as e:
                         self.log(f"⚠️ JC: {str(e)[:50]}")
 
+                # Strategy 1b: Try direct odds parsing from page
+                if not meetings:
+                    self.log("Trying direct odds parse from page...")
+                    all_odds = self._parse_odds(lines)
+                    if all_odds:
+                        mnames = self._find_section_meetings(
+                            lines, 'Horse Racing', 'Greyhounds')
+                        if not mnames:
+                            mnames = self._find_meetings_alt(
+                                lines, 'Challenge')
+                        if mnames:
+                            for mn in mnames[:1]:
+                                meetings.append({
+                                    'meeting': mn.upper(),
+                                    'type': 'jockey',
+                                    'jockeys': all_odds,
+                                    'source': 'elitebet',
+                                    'country': get_country(mn)
+                                })
+                                self.log(f"✅ {mn}: {len(all_odds)} "
+                                         f"(direct parse)")
+                        elif len(all_odds) >= 3:
+                            meetings.append({
+                                'meeting': 'UNKNOWN',
+                                'type': 'jockey',
+                                'jockeys': all_odds,
+                                'source': 'elitebet',
+                                'country': 'AU'
+                            })
+                            self.log(f"✅ UNKNOWN: {len(all_odds)} "
+                                     f"(direct parse)")
+
                 # Strategy 2: Find meetings from section headers
-                # (Extras page shows meetings under "Horse Racing")
                 if not meetings:
                     names = self._find_meetings(lines)
                     if not names:
-                        # Try Ladbrokes-style section finding
                         names = self._find_section_meetings(
                             lines, 'Horse Racing', 'Greyhounds')
                     self.log(f"Section meetings: {len(names)}")
                     for name in names[:MAX_MEETINGS_PER_SCRAPER]:
                         try:
-                            # Click meeting name to expand
                             clicked = await page.evaluate(
                                 r'''(name) => {
-                                    const els = document.querySelectorAll(
-                                        'a, [class*="header"],'
-                                        + ' [class*="title"]');
-                                    for (const el of els) {
+                                    const all =
+                                        document.querySelectorAll(
+                                            'a, button, div, span,'
+                                            + ' [class*="header"],'
+                                            + ' [class*="title"]');
+                                    for (const el of all) {
                                         const t = (el.textContent||'')
                                             .trim();
+                                        if (t.length > 200) continue;
                                         if (t === name
-                                                || t.includes(name)) {
+                                            || (t.includes(name)
+                                                && (t.includes('challenge')
+                                                    || t.includes('3,2,1')
+                                                    || t.includes(
+                                                        'points')))) {
+                                            el.click();
+                                            return true;
+                                        }
+                                    }
+                                    // Try just meeting name click
+                                    for (const el of all) {
+                                        const t = (el.textContent||'')
+                                            .trim();
+                                        if (t === name) {
                                             el.click();
                                             return true;
                                         }
@@ -1962,10 +2169,12 @@ class ElitebetScraper(BaseScraper):
         """Find meetings between section headers (Ladbrokes/Neds format).
         Meetings appear before 'keyboard_arrow_down' lines."""
         s_idx = e_idx = None
+        start_l = start.lower()
+        end_l = end.lower()
         for i, l in enumerate(lines):
-            if l == start and i > 5:
+            if l.lower() == start_l and i > 5:
                 s_idx = i
-            elif l == end and s_idx is not None:
+            elif l.lower() == end_l and s_idx is not None:
                 e_idx = i
                 break
         result = []
@@ -2060,6 +2269,10 @@ class PointsBetScraper(BaseScraper):
                 lines = [l.strip() for l in text.split('\n') if l.strip()]
                 if not self.is_page_blocked(lines) and len(lines) > 10:
                     self.log(f"Page loaded from {url} ({len(lines)} lines) but no specials content")
+                    # DIAGNOSTIC: dump content of small pages
+                    if len(lines) < 30:
+                        for di, dl in enumerate(lines):
+                            self.log(f"  PB[{di}]: {dl[:100]}")
             except Exception:
                 pass
 
@@ -3276,9 +3489,77 @@ class SportsbetScraper(BaseScraper):
 
                 if not found and not meetings:
                     lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+                    # DIAGNOSTIC: dump context around JC/JW keywords
                     for i, l in enumerate(lines):
-                        if any(kw in l.lower() for kw in ['jockey', 'challenge', 'watch']):
+                        if any(kw in l.lower() for kw in
+                               ['jockey', 'challenge', 'watch']):
                             self.log(f"  KEYWORD [{i}]: {l[:100]}")
+                            # Dump +-10 lines around keyword
+                            for j in range(max(0, i-5),
+                                           min(len(lines), i+15)):
+                                self.log(f"    CTX[{j}]: "
+                                         f"{lines[j][:100]}")
+                            break  # Only dump first occurrence
+
+                    # Try finding meeting names near JW/JC keyword
+                    jw_idx = None
+                    for i, l in enumerate(lines):
+                        if l in ('Jockey Watch', 'Jockey Challenge',
+                                 'JOCKEY WATCH', 'JOCKEY CHALLENGE'):
+                            jw_idx = i
+                            break
+                    if jw_idx is not None:
+                        self.log(f"JW/JC at line {jw_idx}, "
+                                 f"trying section parse...")
+                        # Lines after the keyword are the content
+                        section = lines[jw_idx+1:jw_idx+60]
+                        # Try direct odds parsing on this section
+                        jockeys = self._parse(section)
+                        if jockeys:
+                            # Find meeting name from context
+                            mname = 'UNKNOWN'
+                            skip_words = [
+                                'jockey', 'watch', 'challenge',
+                                'horse racing', 'extras', 'specials',
+                                'racing', 'driver', 'see all']
+                            for ln in section[:10]:
+                                if (len(ln) > 2 and len(ln) < 30
+                                        and not any(c.isdigit()
+                                                    for c in ln)
+                                        and not any(
+                                            s in ln.lower()
+                                            for s in skip_words)):
+                                    mname = ln
+                                    break
+                            meetings.append({
+                                'meeting': mname.upper(),
+                                'type': 'jockey',
+                                'jockeys': jockeys,
+                                'source': 'sportsbet',
+                                'country': get_country(mname)
+                            })
+                            self.log(f"✅ {mname}: {len(jockeys)} "
+                                     f"(section parse)")
+                        else:
+                            # Try broader: look for meeting name
+                            # before keyword, then parse after
+                            if jw_idx > 0:
+                                prev = lines[jw_idx - 1]
+                                self.log(f"  Before JW: '{prev}'")
+                            # Try parsing ALL lines for odds
+                            all_jockeys = self._parse(lines)
+                            if all_jockeys:
+                                meetings.append({
+                                    'meeting': 'UNKNOWN',
+                                    'type': 'jockey',
+                                    'jockeys': all_jockeys,
+                                    'source': 'sportsbet',
+                                    'country': 'AU'
+                                })
+                                self.log(f"✅ UNKNOWN: "
+                                         f"{len(all_jockeys)} "
+                                         f"(full page parse)")
 
                 for meeting in found[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
