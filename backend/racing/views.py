@@ -245,8 +245,8 @@ def calculate_ai_prices(participants, margin=1.02):
             if num_books >= 2 and best_odds > odds:
                 edge = ((best_odds - odds) / odds) * 100
             else:
-                # Single source: compare best odds to AI price (standard)
-                edge = ((best_odds - ai_price) / ai_price * 100) if ai_price > 0 else 0
+                # Single source: no comparison possible, set edge = 0
+                edge = 0
 
             p.update({
                 'tab_odds': best_odds,

@@ -368,7 +368,9 @@ class TABtouchScraper(BaseScraper):
                     # Second pass: fall back to any challenge link
                     for item in (href_data or []):
                         txt = item['text'].lower()
-                        if 'quinella' in txt or 'jockey wins' in txt:
+                        if any(bad in txt for bad in [
+                                'quinella', 'jockey wins', 'driver wins',
+                                'wins', 'winner', 'most winner']):
                             continue  # skip wrong sub-markets
                         if not any(kw in txt for kw in [
                                 'challenge', 'jockey', 'driver']):
@@ -432,15 +434,29 @@ class TABtouchScraper(BaseScraper):
 
                         await random_delay(2.0, 3.0)
 
+                        # Check URL first - if it contains wrong market
+                        current_url = page.url.lower()
+                        if any(bad in current_url for bad in [
+                                'wins', 'quinella', 'winner']):
+                            self.log(f"  {meeting_name}: wrong URL "
+                                     f"({current_url}), skipping")
+                            continue
+
                         # Check if we landed on wrong sub-market
                         # (Quinella or Jockey Wins instead of 3,2,1 Points)
                         check_lines = await self.get_text_lines(page)
+                        page_text = ' '.join(check_lines).lower()
                         page_header = ' '.join(check_lines[:25]).lower()
-                        wrong_market = ('quinella' in page_header
-                                        or 'jockey wins' in page_header
-                                        or 'to ride zero' in ' '.join(
-                                            check_lines[30:45]).upper()
-                                        if len(check_lines) > 30 else False)
+                        wrong_market = (
+                            'quinella' in page_header
+                            or 'jockey wins' in page_header
+                            or 'driver wins' in page_header
+                            or 'to ride zero' in page_text
+                            or 'to ride one' in page_text
+                            or 'most winners' in page_text
+                            or 'to drive zero' in page_text
+                            or 'to drive one' in page_text
+                        )
                         if wrong_market:
                             # Go back to listing and click the 3,2,1 Points link
                             self.log(f"  {meeting_name}: wrong sub-market, "
@@ -614,8 +630,10 @@ class TABtouchScraper(BaseScraper):
         p2o = re.compile(r'^(\d+\.\d{2})$')
         # Pattern 3: Just NAME on one line, 12.34 on next (simplest)
         p3n = re.compile(r'^([A-Z][A-Z\s]{2,})$')
-        skip_names = ['ANY OTHER', 'JOCKEY CHALLENGE', 'POINTS', 'RACE',
-                      'MEETING', 'CLOSE', 'OPEN', 'SUSPENDED']
+        skip_names = ['ANY OTHER', 'JOCKEY CHALLENGE', 'DRIVER CHALLENGE',
+                      'POINTS', 'RACE', 'MEETING', 'CLOSE', 'OPEN',
+                      'SUSPENDED', 'TO RIDE', 'TO DRIVE', 'WINNER',
+                      'WINNERS', 'MOST', 'JOCKEY WINS', 'DRIVER WINS']
         i = 0
         while i < len(lines):
             m1 = p1.match(lines[i])
