@@ -417,6 +417,26 @@ class TABtouchScraper(BaseScraper):
 
                         await random_delay(2.0, 3.0)
 
+                        # Ensure we're on the "3,2,1 Points" tab (not
+                        # Quinella or Jockey Wins sub-markets)
+                        try:
+                            tab_label = '3,2,1 Points' if challenge_type == 'jockey' else '3,2,1 Points'
+                            for sel in [
+                                f'text="{tab_label}"',
+                                f'text=/3.*2.*1.*points/i',
+                                f'text="{meeting_name} {label} 3,2,1 Points"',
+                            ]:
+                                try:
+                                    loc = page.locator(sel).first
+                                    if await loc.count() > 0:
+                                        await loc.click(timeout=3000)
+                                        await random_delay(1.0, 2.0)
+                                        break
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+
                         # Wait for SPA to render odds (poll up to 15s)
                         odds_pattern = re.compile(r'\d+\.\d{2}')
                         detail_lines = []
