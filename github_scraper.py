@@ -1200,6 +1200,57 @@ class LadbrokesScraper(BaseScraper):
                     lines = await self._load_extras_page(page)
                     if not self.is_page_blocked(lines) and len(lines) >= 15:
                         self.log(f"Extras page: {len(lines)} lines")
+
+                        # The extras page defaults to "Featured"
+                        # sub-tab. Click "Jockey Challenge" sub-tab.
+                        jc_clicked = False
+                        for jc_sel in [
+                            'text="Jockey Challenge"',
+                            'text="3,2,1 Points"',
+                            'a:has-text("Jockey Challenge")',
+                            'a:has-text("3,2,1 Points")',
+                            'text="JOCKEY CHALLENGE"',
+                        ]:
+                            try:
+                                el = page.locator(jc_sel).first
+                                if await el.count() > 0:
+                                    await el.click(timeout=3000)
+                                    self.log(f"Clicked JC sub-tab: "
+                                             f"{jc_sel}")
+                                    jc_clicked = True
+                                    await random_delay(2.0, 3.0)
+                                    break
+                            except Exception:
+                                pass
+                        if not jc_clicked:
+                            # Try JS-based click for JC sub-tab
+                            jc_clicked = await page.evaluate(r'''() => {
+                                const els = document.querySelectorAll(
+                                    'a, button, div, span, li');
+                                for (const el of els) {
+                                    const t = (el.textContent||'')
+                                        .trim().toLowerCase();
+                                    if (t.length < 50
+                                        && (t === 'jockey challenge'
+                                            || t === '3,2,1 points'
+                                            || t.includes(
+                                                'jockey challenge'))) {
+                                        el.click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            }''')
+                            if jc_clicked:
+                                self.log("Clicked JC via JS DOM search")
+                                await random_delay(2.0, 3.0)
+
+                        # Scroll to load content
+                        for _ in range(8):
+                            await page.evaluate('window.scrollBy(0, 600)')
+                            await random_delay(0.4, 0.7)
+                        await random_delay(2.0, 3.0)
+
                         # Expand accordions
                         expanded = await page.evaluate(r'''() => {
                             let count = 0;
@@ -1898,8 +1949,60 @@ class ElitebetScraper(BaseScraper):
                     lines = await self.get_text_lines(page)
                     self.log(f"After extra wait: {len(lines)} lines")
 
-                # Neds/Elitebet uses same Extras format as Ladbrokes
-                # Expand all accordion sections first
+                # The page defaults to "Featured" sub-tab.
+                # Click "Racing Extras" then "Jockey Challenge"
+                for extras_sel in [
+                    'text="Racing Extras"',
+                    'a:has-text("Racing Extras")',
+                ]:
+                    try:
+                        el = page.locator(extras_sel).first
+                        if await el.count() > 0:
+                            await el.click(timeout=3000)
+                            self.log(f"Clicked: {extras_sel}")
+                            await random_delay(2.0, 3.0)
+                            break
+                    except Exception:
+                        pass
+                for jc_sel in [
+                    'text="Jockey Challenge"',
+                    'text="3,2,1 Points"',
+                    'a:has-text("Jockey Challenge")',
+                    'a:has-text("3,2,1 Points")',
+                    'text="JOCKEY CHALLENGE"',
+                ]:
+                    try:
+                        el = page.locator(jc_sel).first
+                        if await el.count() > 0:
+                            await el.click(timeout=3000)
+                            self.log(f"Clicked JC sub-tab: {jc_sel}")
+                            await random_delay(2.0, 3.0)
+                            break
+                    except Exception:
+                        pass
+                # JS fallback for JC sub-tab click
+                await page.evaluate(r'''() => {
+                    const els = document.querySelectorAll(
+                        'a, button, div, span, li');
+                    for (const el of els) {
+                        const t = (el.textContent||'')
+                            .trim().toLowerCase();
+                        if (t.length < 50
+                            && (t === 'jockey challenge'
+                                || t === '3,2,1 points')) {
+                            el.click();
+                            return;
+                        }
+                    }
+                }''')
+
+                # Scroll to load content after tab click
+                for _ in range(8):
+                    await page.evaluate('window.scrollBy(0, 600)')
+                    await random_delay(0.4, 0.7)
+                await random_delay(2.0, 3.0)
+
+                # Expand all accordion sections
                 try:
                     expanded = await page.evaluate(r'''() => {
                         let count = 0;
@@ -2147,6 +2250,26 @@ class ElitebetScraper(BaseScraper):
 
         return await with_retry(_do_scrape, name=self.name)
 
+    def _parse_odds(self, lines):
+        """Parse odds from page lines. Same logic as LadbrokesScraper."""
+        result = []
+        skip = ['Challenge', 'keyboard', 'Same Meeting',
+                'Most Points', 'Winner', 'arrow', 'Racing Extras',
+                'Featured', 'Betslip', 'Next To Go']
+        for i, l in enumerate(lines):
+            if re.match(r'^\d+\.\d{2}$', l):
+                odds = float(l)
+                if i > 0 and 1.01 < odds < 500:
+                    name = lines[i - 1]
+                    if (name and len(name) > 3
+                            and not re.match(r'^\d', name)
+                            and not any(s.lower() in name.lower()
+                                        for s in skip)
+                            and not any(p['name'] == name
+                                        for p in result)):
+                        result.append({'name': name, 'odds': odds})
+        return result
+
     def _find_meetings(self, lines):
         names = []
         dp = re.compile(
@@ -2248,12 +2371,13 @@ class PointsBetScraper(BaseScraper):
                        else 'Harness Specials')
 
         # Approach 1: Direct specials/challenge URLs
+        # jockey-challenge, specials, extras all return 404
+        # Only ?search= and ?tab= work on PointsBet
         specials_urls = [
-            f'https://pointsbet.com.au/racing/{race_type}-challenge',
-            'https://pointsbet.com.au/racing/specials',
-            'https://pointsbet.com.au/racing?search=specials',
-            'https://pointsbet.com.au/racing/extras',
             'https://pointsbet.com.au/racing?tab=specials',
+            'https://pointsbet.com.au/racing?search=specials',
+            f'https://pointsbet.com.au/racing?tab={race_type}-challenge',
+            'https://pointsbet.com.au/racing',
         ]
         for url in specials_urls:
             try:
@@ -3410,7 +3534,15 @@ class SportsbetScraper(BaseScraper):
                     found = re.findall(pat, text)
                     if found:
                         break
-                found = list(dict.fromkeys([m.strip() for m in found if len(m.strip()) > 2]))
+                # Filter out non-meeting names
+                skip_names = ['visit now', 'see all', 'view all',
+                              'show more', 'more', 'extras',
+                              'specials', 'horse racing',
+                              'jockey watch', 'jockey challenge']
+                found = list(dict.fromkeys(
+                    [m.strip() for m in found
+                     if len(m.strip()) > 2
+                     and m.strip().lower() not in skip_names]))
                 self.log(f"Found {len(found)} jockey meetings")
 
                 if not found:
@@ -3434,7 +3566,33 @@ class SportsbetScraper(BaseScraper):
                                 await random_delay(0.3, 0.5)
                             text = await page.evaluate(
                                 'document.body.innerText')
-                            # Re-try all patterns including more
+
+                            # Try "Visit Now" click to navigate
+                            # to JC page (Sportsbet uses this)
+                            for vn_sel in [
+                                'text="Visit Now"',
+                                'a:has-text("Visit Now")',
+                                'button:has-text("Visit Now")',
+                                'text="VISIT NOW"',
+                            ]:
+                                try:
+                                    el = page.locator(vn_sel).first
+                                    if await el.count() > 0:
+                                        await el.click(timeout=3000)
+                                        self.log(f"Clicked '{vn_sel}'"
+                                                 f" to navigate to JC")
+                                        await random_delay(3.0, 5.0)
+                                        for _ in range(6):
+                                            await page.evaluate(
+                                                'window.scrollBy(0,500)')
+                                            await random_delay(0.3, 0.5)
+                                        text = await page.evaluate(
+                                            'document.body.innerText')
+                                        break
+                                except Exception:
+                                    pass
+
+                            # Re-try all patterns
                             all_patterns = patterns + [
                                 r'(\w[\w ]+?)\s+Jockey Challenge',
                                 r'(\w[\w ]+?)\s+Jockey Watch',
@@ -3446,7 +3604,9 @@ class SportsbetScraper(BaseScraper):
                                     break
                             found = list(dict.fromkeys(
                                 [m.strip() for m in found
-                                 if len(m.strip()) > 2]))
+                                 if len(m.strip()) > 2
+                                 and m.strip().lower()
+                                 not in skip_names]))
                             if found:
                                 self.log(f"After expand: {len(found)}")
                                 break
