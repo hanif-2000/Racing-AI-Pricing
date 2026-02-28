@@ -1079,11 +1079,19 @@ class LadbrokesScraper(BaseScraper):
                             # Find individual meeting links
                             jc_hrefs = await page.evaluate(r'''() => {
                                 const results = [];
+                                const bad = ['pre-commitment', 'responsible',
+                                    'gambling', 'terms', 'privacy', 'help',
+                                    'support', 'download', 'betstop',
+                                    'deposit limit', 'self-exclu'];
                                 document.querySelectorAll('a').forEach(a => {
                                     const href = a.href || '';
                                     const text = (a.innerText || '').trim();
                                     const lh = href.toLowerCase();
                                     const lt = text.toLowerCase();
+                                    // Skip anchor-only and footer links
+                                    if (lh.endsWith('#') || lh.endsWith('#/')
+                                        || bad.some(b => lt.includes(b)))
+                                        return;
                                     if (lh.includes('jockey-challenge')
                                         || (lt.includes('jockey challenge')
                                             && !lt.includes('horse racing')
@@ -1765,40 +1773,152 @@ class ElitebetScraper(BaseScraper):
 
                 self.log(f"Page loaded: {len(lines)} lines")
 
-                # Try clicking Jockey Challenge section
-                jc_found = False
-                for sel in ['text=Jockey Challenge', 'text="Jockey Challenge"',
-                            'a:has-text("Jockey Challenge")',
-                            'button:has-text("Jockey Challenge")']:
-                    try:
-                        el = page.locator(sel).first
-                        if await el.count() > 0:
-                            await el.click(timeout=5000)
-                            await random_delay(2.0, 3.0)
-                            jc_found = True
-                            break
-                    except Exception:
-                        pass
-
-                if not jc_found:
-                    self.log("No Jockey Challenge section found")
-                    self.log_diagnostics(lines, "no-jc-section")
-                    return []
+                # Neds/Elitebet uses same Extras format as Ladbrokes
+                # Expand all accordion sections first
+                try:
+                    expanded = await page.evaluate(r'''() => {
+                        let count = 0;
+                        document.querySelectorAll(
+                            '[class*="arrow"], [class*="expand"],'
+                            + ' [class*="accordion"], [class*="toggle"]'
+                        ).forEach(el => { el.click(); count++; });
+                        document.querySelectorAll('*').forEach(el => {
+                            const t = el.textContent.trim();
+                            if (t === 'keyboard_arrow_down'
+                                    && el.previousElementSibling) {
+                                el.previousElementSibling.click();
+                                count++;
+                            }
+                        });
+                        return count;
+                    }''')
+                    self.log(f"Expanded {expanded} accordions")
+                    await random_delay(3.0, 5.0)
+                    for _ in range(6):
+                        await page.evaluate('window.scrollBy(0, 600)')
+                        await random_delay(0.4, 0.7)
+                except Exception:
+                    pass
 
                 lines = await self.get_text_lines(page)
-                names = self._find_meetings(lines)
-                self.log(f"Found {len(names)} meetings")
-                if not names:
-                    self.log_diagnostics(lines, "no-meetings")
 
-                for name in names[:MAX_MEETINGS_PER_SCRAPER]:
+                # Strategy 1: Find JC links via href/text
+                jc_hrefs = await page.evaluate(r'''() => {
+                    const results = [];
+                    const bad = ['pre-commitment', 'responsible',
+                        'gambling', 'terms', 'privacy', 'betstop'];
+                    document.querySelectorAll('a').forEach(a => {
+                        const href = a.href || '';
+                        const text = (a.innerText || '').trim();
+                        const lh = href.toLowerCase();
+                        const lt = text.toLowerCase();
+                        if (lh.endsWith('#') || lh.endsWith('#/')
+                            || bad.some(b => lt.includes(b)))
+                            return;
+                        if (lh.includes('jockey-challenge')
+                            || (lt.includes('jockey challenge')
+                                && !lt.includes('horse racing')
+                                && text.length < 80)) {
+                            results.push({href: href, text: text});
+                        }
+                    });
+                    return results;
+                }''')
+                self.log(f"Found {len(jc_hrefs)} JC links")
+
+                extras_url = page.url
+
+                # Navigate to each JC link
+                for jc in jc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
                     try:
-                        elem = page.locator(f'text={name}').first
-                        if await elem.count() > 0:
-                            await elem.click()
+                        href = jc['href']
+                        text = jc['text']
+                        meeting_name = None
+                        for pat in [
+                            r'Jockey Challenge\s*[-–]\s*(\w[\w\s]+)',
+                            r'(\w[\w\s]+?)\s*[-–]\s*Jockey Challenge',
+                        ]:
+                            m = re.search(pat, text)
+                            if m:
+                                meeting_name = m.group(1).strip()
+                                break
+                        if not meeting_name:
+                            hm = re.search(
+                                r'jockey-challenge[/-](\w+)',
+                                href.lower())
+                            if hm:
+                                meeting_name = hm.group(1).title()
+                        if not meeting_name:
+                            meeting_name = text[:30]
+                        meeting_name = re.sub(
+                            r'keyboard_arrow\w*', '',
+                            meeting_name).strip()
+                        meeting_name = meeting_name.rstrip(' -–')
+                        if not meeting_name or len(meeting_name) < 3:
+                            continue
+                        self.log(f"JC: {meeting_name} ({href[:60]})")
+                        await self.safe_goto(page, href)
+                        await random_delay(2.0, 3.0)
+                        for _ in range(3):
+                            det_lines = await self.get_text_lines(page)
+                            if len(det_lines) > 15:
+                                break
                             await random_delay(1.5, 2.5)
-                            lines = await self.get_text_lines(page)
-                            jockeys = self._parse(lines, name)
+                        jockeys = self._parse_odds(det_lines)
+                        if jockeys:
+                            meetings.append({
+                                'meeting': meeting_name.upper(),
+                                'type': 'jockey',
+                                'jockeys': jockeys,
+                                'source': 'elitebet',
+                                'country': get_country(meeting_name)
+                            })
+                            self.log(f"✅ {meeting_name}: "
+                                     f"{len(jockeys)} jockeys")
+                        await self.safe_goto(page, extras_url)
+                        await random_delay(2.0, 3.0)
+                    except Exception as e:
+                        self.log(f"⚠️ JC: {str(e)[:50]}")
+
+                # Strategy 2: Find meetings from section headers
+                # (Extras page shows meetings under "Horse Racing")
+                if not meetings:
+                    names = self._find_meetings(lines)
+                    if not names:
+                        # Try Ladbrokes-style section finding
+                        names = self._find_section_meetings(
+                            lines, 'Horse Racing', 'Greyhounds')
+                    self.log(f"Section meetings: {len(names)}")
+                    for name in names[:MAX_MEETINGS_PER_SCRAPER]:
+                        try:
+                            # Click meeting name to expand
+                            clicked = await page.evaluate(
+                                r'''(name) => {
+                                    const els = document.querySelectorAll(
+                                        'a, [class*="header"],'
+                                        + ' [class*="title"]');
+                                    for (const el of els) {
+                                        const t = (el.textContent||'')
+                                            .trim();
+                                        if (t === name
+                                                || t.includes(name)) {
+                                            el.click();
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                }''', name)
+                            if not clicked:
+                                clicked = await self.safe_click(
+                                    page, f'text="{name}"', timeout=3000)
+                            if not clicked:
+                                continue
+                            self.log(f"Clicked: {name}")
+                            await random_delay(2.0, 3.0)
+                            det_lines = await self.get_text_lines(page)
+                            jockeys = self._parse_odds(det_lines)
+                            if not jockeys:
+                                jockeys = self._parse(det_lines, name)
                             if jockeys:
                                 meetings.append({
                                     'meeting': name.upper(),
@@ -1807,12 +1927,13 @@ class ElitebetScraper(BaseScraper):
                                     'source': 'elitebet',
                                     'country': get_country(name)
                                 })
-                                self.log(f"✅ {name}: {len(jockeys)} jockeys")
+                                self.log(f"✅ {name}: "
+                                         f"{len(jockeys)} jockeys")
                             else:
-                                self.log(f"⚠️ {name}: parsed 0 jockeys")
-                    except Exception as e:
-                        self.log(f"⚠️ {name}: {str(e)[:50]}")
-                    await random_delay(1.0, 2.5)
+                                self.log(f"⚠️ {name}: parsed 0")
+                        except Exception as e:
+                            self.log(f"⚠️ {name}: {str(e)[:50]}")
+                        await random_delay(1.0, 2.5)
             finally:
                 await self.close_browser()
             return meetings
@@ -1824,7 +1945,9 @@ class ElitebetScraper(BaseScraper):
         dp = re.compile(
             r'^\d{2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2}$'
         )
-        skip = ['Racing', 'Jockey Challenge', 'Results', 'Today', 'Tomorrow', 'Futures']
+        skip = ['Racing', 'Jockey Challenge', 'Results', 'Today',
+                'Tomorrow', 'Futures', 'INTL', 'Horse Racing',
+                'Greyhounds', 'Harness Racing', 'Extras']
         for i, l in enumerate(lines):
             if dp.match(l) and i > 0:
                 prev = lines[i - 1]
@@ -1834,6 +1957,30 @@ class ElitebetScraper(BaseScraper):
                         and not any(c.isdigit() for c in prev)):
                     names.append(prev)
         return names
+
+    def _find_section_meetings(self, lines, start, end):
+        """Find meetings between section headers (Ladbrokes/Neds format).
+        Meetings appear before 'keyboard_arrow_down' lines."""
+        s_idx = e_idx = None
+        for i, l in enumerate(lines):
+            if l == start and i > 5:
+                s_idx = i
+            elif l == end and s_idx is not None:
+                e_idx = i
+                break
+        result = []
+        if s_idx is not None:
+            stop = e_idx or min(s_idx + 60, len(lines))
+            for i in range(s_idx + 1, stop):
+                if (i + 1 < len(lines)
+                        and lines[i + 1] == 'keyboard_arrow_down'):
+                    name = lines[i]
+                    if (name and len(name) > 2
+                            and name not in ['INTL', 'Horse Racing',
+                                             'Harness Racing']
+                            and name not in result):
+                        result.append(name)
+        return result
 
     def _parse(self, lines, meeting):
         result = []
@@ -2165,12 +2312,19 @@ class PointsBetScraper(BaseScraper):
 
                 # If that gives us data, filter by meeting name context
                 if parsed:
-                    # The parse above might return ALL jockeys, not per-meeting
-                    # Try to find section for this specific meeting
                     meeting_section = self._parse_meeting_section(
                         lines, name, challenge_kw)
                     if meeting_section:
                         parsed = meeting_section
+
+                # Also try with specials keyword
+                if not parsed:
+                    parsed = self._parse(lines, specials_kw)
+                    if parsed:
+                        meeting_section = self._parse_meeting_section(
+                            lines, name, specials_kw)
+                        if meeting_section:
+                            parsed = meeting_section
 
                 if parsed:
                     results.append({
@@ -2182,13 +2336,16 @@ class PointsBetScraper(BaseScraper):
                     })
                     self.log(f"✅ {name}: {len(parsed)} ({race_type})")
                 else:
-                    # Try clicking into the meeting
+                    # Try clicking into the meeting with more patterns
                     clicked = False
                     for pat in [
                         f'text="{name} - {specials_kw}"',
                         f'text="{challenge_kw} - {name}"',
                         f'text="{name} {challenge_kw}"',
-                        f'text="{name}"',
+                        f'text="{name} - {challenge_kw}"',
+                        f'text=/{re.escape(name)}.*Challenge/i',
+                        f'text=/{re.escape(name)}.*Specials/i',
+                        f'text=/{re.escape(name)}/i',
                     ]:
                         clicked = await self.safe_click(
                             page, pat, timeout=3000)
@@ -3044,8 +3201,11 @@ class SportsbetScraper(BaseScraper):
                 self.log(f"Found {len(found)} jockey meetings")
 
                 if not found:
-                    # Try clicking "Jockey Watch" to expand section
+                    # Try clicking into JC sections directly
                     for jw_sel in [
+                        'text="Jockey Challenge"',
+                        'text="JOCKEY CHALLENGE"',
+                        'a:has-text("Jockey Challenge")',
                         'text="Jockey Watch"', 'text="JOCKEY WATCH"',
                         'a:has-text("Jockey Watch")',
                         'button:has-text("Jockey Watch")',
@@ -3055,14 +3215,19 @@ class SportsbetScraper(BaseScraper):
                         if jw_clicked:
                             self.log(f"Clicked '{jw_sel}' to expand")
                             await random_delay(2.0, 3.0)
-                            for _ in range(4):
+                            for _ in range(6):
                                 await page.evaluate(
                                     'window.scrollBy(0, 500)')
                                 await random_delay(0.3, 0.5)
                             text = await page.evaluate(
                                 'document.body.innerText')
-                            # Re-try patterns
-                            for pat in patterns:
+                            # Re-try all patterns including more
+                            all_patterns = patterns + [
+                                r'(\w[\w ]+?)\s+Jockey Challenge',
+                                r'(\w[\w ]+?)\s+Jockey Watch',
+                                r'Jockey Challenge\s+(\w[\w ]+?)(?:\s|$)',
+                            ]
+                            for pat in all_patterns:
                                 found = re.findall(pat, text)
                                 if found:
                                     break
@@ -3077,15 +3242,26 @@ class SportsbetScraper(BaseScraper):
                                          text.split('\n') if l.strip()]
                             jockeys = self._parse(exp_lines)
                             if jockeys:
-                                # Single expanded section = one meeting
-                                # Try to find meeting name
+                                # Find meeting name from page text
                                 mname = 'UNKNOWN'
                                 for ln in exp_lines:
+                                    # "Toowoomba" style or "TOOWOOMBA"
                                     m = re.match(
                                         r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)'
                                         r'\s+Jockey', ln)
                                     if m:
                                         mname = m.group(1).strip()
+                                        break
+                                    m2 = re.match(
+                                        r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)$',
+                                        ln)
+                                    if (m2 and len(ln) > 3
+                                            and ln not in [
+                                                'Jockey Watch',
+                                                'Jockey Challenge',
+                                                'Horse Racing',
+                                                'Extras', 'Specials']):
+                                        mname = m2.group(1).strip()
                                         break
                                 meetings.append({
                                     'meeting': mname.upper(),
