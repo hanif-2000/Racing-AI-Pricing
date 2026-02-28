@@ -289,11 +289,16 @@ class TABtouchScraper(BaseScraper):
         """Scrape either jockey or driver challenge from TABtouch.
         Click into each meeting from the listing page to get odds."""
         if challenge_type == 'jockey':
-            url = 'https://www.tabtouch.com.au/racing/jockey-challenge'
+            urls = ['https://www.tabtouch.com.au/racing/jockey-challenge']
             label = 'Jockey Challenge'
             key = 'jockeys'
         else:
-            url = 'https://www.tabtouch.com.au/racing/driver-challenge'
+            # Driver challenge: try multiple URLs since the dedicated page
+            # may redirect to generic trots listing
+            urls = [
+                'https://www.tabtouch.com.au/racing/driver-challenge',
+                'https://www.tabtouch.com.au/racing/trots',
+            ]
             label = 'Driver Challenge'
             key = 'drivers'
 
@@ -305,15 +310,58 @@ class TABtouchScraper(BaseScraper):
                 self.log(f"Starting {challenge_type}...")
 
                 # Step 1: Load listing page to find meeting names
-                await self.safe_goto(page, url)
-                await random_delay(2.0, 4.0)
-                for _ in range(5):
-                    await page.evaluate('window.scrollBy(0, 500)')
-                    await random_delay(0.3, 0.5)
+                # Try each URL until we find challenge content
+                lines = []
+                url = urls[0]
+                for try_url in urls:
+                    await self.safe_goto(page, try_url)
+                    await random_delay(2.0, 4.0)
+                    for _ in range(5):
+                        await page.evaluate('window.scrollBy(0, 500)')
+                        await random_delay(0.3, 0.5)
 
-                lines = await self.get_text_lines(page)
-                if self.is_page_blocked(lines):
-                    self.log("Page appears blocked")
+                    lines = await self.get_text_lines(page)
+                    if self.is_page_blocked(lines):
+                        self.log(f"Blocked at {try_url}")
+                        continue
+
+                    # Check if we have challenge content
+                    page_text = ' '.join(lines).lower()
+                    if (label.lower() in page_text
+                            or '3,2,1' in page_text
+                            or 'challenge' in page_text):
+                        url = try_url
+                        self.log(f"Found challenge content at {try_url}")
+                        break
+
+                    # For driver: if on trots page, look for DC links
+                    if challenge_type == 'driver':
+                        dc_links = await page.evaluate(r'''() => {
+                            const results = [];
+                            document.querySelectorAll('a[href]').forEach(
+                                a => {
+                                const href = a.href || '';
+                                const text = (a.textContent || '').trim();
+                                if (href.toLowerCase().includes(
+                                        'driver-challenge')
+                                    || text.toLowerCase().includes(
+                                        'driver challenge')) {
+                                    results.push(
+                                        {href: href, text: text});
+                                }
+                            });
+                            return results;
+                        }''')
+                        if dc_links:
+                            self.log(f"Found {len(dc_links)} DC links "
+                                     f"on trots page")
+                            url = try_url
+                            break
+                    self.log(f"No challenge content at {try_url} "
+                             f"({len(lines)} lines)")
+
+                if not lines or self.is_page_blocked(lines):
+                    self.log("All URLs blocked or empty")
                     return []
 
                 # Find meeting names from listing - try multiple patterns
@@ -680,19 +728,36 @@ class TABtouchScraper(BaseScraper):
                                     pass
                                 page = await self.new_page()
                                 await self.safe_goto(page, target_url)
-                                await random_delay(2.0, 3.0)
-                                # Click FIXED tab on fresh page
-                                try:
-                                    loc = page.locator(
-                                        'text="FIXED"').first
-                                    if await loc.count() > 0:
-                                        await loc.click(timeout=2000)
-                                        await random_delay(1.0, 2.0)
-                                except Exception:
-                                    pass
-                                for _ in range(3):
+                                await random_delay(3.0, 5.0)
+                                # Toggle TOTE then FIXED to force re-render
+                                for tab_sel in ['text="TOTE"',
+                                                'text="Tote"']:
+                                    try:
+                                        loc = page.locator(tab_sel).first
+                                        if await loc.count() > 0:
+                                            await loc.click(timeout=2000)
+                                            await random_delay(1.0, 2.0)
+                                            break
+                                    except Exception:
+                                        pass
+                                for tab_sel in ['text="FIXED"',
+                                                'text="Fixed"',
+                                                'button:has-text("FIXED")']:
+                                    try:
+                                        loc = page.locator(tab_sel).first
+                                        if await loc.count() > 0:
+                                            await loc.click(timeout=2000)
+                                            await random_delay(2.0, 3.0)
+                                            break
+                                    except Exception:
+                                        pass
+                                # Scroll full page up and down to trigger
+                                await page.evaluate(
+                                    'window.scrollTo(0, 0)')
+                                await random_delay(0.5, 1.0)
+                                for _ in range(5):
                                     await page.evaluate(
-                                        'window.scrollBy(0, 300)')
+                                        'window.scrollBy(0, 400)')
                                     await random_delay(0.3, 0.5)
                                 detail_lines = await self.get_text_lines(
                                     page)
@@ -954,178 +1019,332 @@ class LadbrokesScraper(BaseScraper):
                 page = await self.new_page()
                 self.log("Starting jockey...")
 
-                lines = await self._load_extras_page(page)
-                if self.is_page_blocked(lines):
-                    self.log("Page appears blocked")
-                    return []
-
-                self.log(f"Extras page loaded: {len(lines)} lines")
-                if len(lines) < 15:
-                    self.log_diagnostics(lines, "jockey-too-few-lines")
-                    return []
-
-                # Step 1: Expand ALL accordion sections with JS
-                expanded = await page.evaluate(r'''() => {
-                    let count = 0;
-                    // Click all elements with arrow icons (accordion headers)
-                    document.querySelectorAll(
-                        '[class*="arrow"], [class*="expand"],'
-                        + ' [class*="accordion"], [class*="toggle"]'
-                    ).forEach(el => { el.click(); count++; });
-                    // Also click elements next to keyboard_arrow_down text
-                    const allEls = document.querySelectorAll('*');
-                    allEls.forEach(el => {
-                        const t = el.textContent.trim();
-                        if (t === 'keyboard_arrow_down' && el.previousElementSibling) {
-                            el.previousElementSibling.click();
-                            count++;
-                        }
-                    });
-                    return count;
-                }''')
-                self.log(f"Expanded {expanded} accordion sections")
-                await random_delay(3.0, 5.0)
-
-                # Scroll to load lazy content
-                for _ in range(6):
-                    await page.evaluate('window.scrollBy(0, 600)')
-                    await random_delay(0.4, 0.7)
-
-                # Step 2: Find all <a> tags with JC hrefs or text
-                jc_hrefs = await page.evaluate(r'''() => {
-                    const results = [];
-                    document.querySelectorAll('a').forEach(a => {
-                        const href = a.href || '';
-                        const text = (a.innerText || '').trim();
-                        const lh = href.toLowerCase();
-                        const lt = text.toLowerCase();
-                        if (lh.includes('jockey-challenge')
-                            || (lt.includes('jockey challenge')
-                                && !lt.includes('horse racing')
-                                && text.length < 80)) {
-                            results.push({href: href, text: text});
-                        }
-                    });
-                    return results;
-                }''')
-                self.log(f"Found {len(jc_hrefs)} JC links on page")
-
-                extras_url = page.url
-
-                # Step 3: Navigate to each JC href directly
-                for jc in jc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
+                # === Strategy 1: Direct /racing/jockey-challenge URL ===
+                # Ladbrokes now has a dedicated JC page
+                jc_direct_urls = [
+                    'https://www.ladbrokes.com.au/racing/jockey-challenge',
+                    'https://www.neds.com.au/racing/jockey-challenge',
+                ]
+                for jc_url in jc_direct_urls:
                     try:
-                        href = jc['href']
-                        text = jc['text']
-                        # Extract meeting name from text or href
-                        meeting_name = None
-                        for pat in [
-                            r'Jockey Challenge\s*[-–]\s*(\w[\w\s]+)',
-                            r'(\w[\w\s]+?)\s*[-–]\s*Jockey Challenge',
-                        ]:
-                            m = re.search(pat, text)
-                            if m:
-                                meeting_name = m.group(1).strip()
+                        # Visit home page first for session
+                        await self.safe_goto(
+                            page, jc_url.rsplit('/racing/', 1)[0])
+                        await random_delay(2.0, 4.0)
+                        # Dismiss modals
+                        for sel in ['text="Accept"', 'text="OK"',
+                                    'text="Continue"',
+                                    'button:has-text("Accept")',
+                                    'text="I am 18+"',
+                                    '[aria-label="Close"]']:
+                            try:
+                                el = page.locator(sel).first
+                                if await el.count() > 0:
+                                    await el.click(timeout=2000)
+                                    await random_delay(0.3, 0.5)
+                            except Exception:
+                                pass
+
+                        await self.safe_goto(page, jc_url)
+                        await random_delay(3.0, 5.0)
+                        # Wait for SPA
+                        for attempt in range(5):
+                            lines = await self.get_text_lines(page)
+                            if len(lines) > 15:
                                 break
-                        if not meeting_name:
-                            # Try from href: .../jockey-challenge-randwick
-                            hm = re.search(
-                                r'jockey-challenge-(\w+)', href.lower())
-                            if hm:
-                                meeting_name = hm.group(1).title()
-                        if not meeting_name:
-                            meeting_name = text[:30]
-                        # Clean meeting name
-                        meeting_name = re.sub(
-                            r'keyboard_arrow\w*', '', meeting_name).strip()
-                        meeting_name = re.sub(
-                            r'\d+[smh]$', '', meeting_name).strip()
-                        meeting_name = meeting_name.rstrip(' -–')
-
-                        if not meeting_name or len(meeting_name) < 3:
-                            continue
-
-                        self.log(f"Navigating to JC: {meeting_name} ({href[:60]})")
-                        await self.safe_goto(page, href)
-                        await random_delay(2.0, 3.0)
-                        # Wait for content
-                        for _ in range(3):
-                            det_lines = await self.get_text_lines(page)
-                            if len(det_lines) > 15:
-                                break
-                            await random_delay(1.5, 2.5)
-                        jockeys = self._parse_odds(det_lines)
-                        if jockeys:
-                            meetings.append({
-                                'meeting': meeting_name.upper(),
-                                'type': 'jockey',
-                                'jockeys': jockeys,
-                                'source': 'ladbrokes',
-                                'country': get_country(meeting_name)
-                            })
-                            self.log(
-                                f"✅ {meeting_name}: {len(jockeys)} jockeys")
-                        else:
-                            self.log(
-                                f"⚠️ {meeting_name}: parsed 0 jockeys")
-
-                        # Navigate back to extras
-                        await self.safe_goto(page, extras_url)
-                        await random_delay(2.0, 3.0)
-                    except Exception as e:
-                        self.log(f"⚠️ JC href error: {str(e)[:50]}")
-
-                # Step 4: Fallback - find meetings from page text,
-                # build JC URLs and navigate directly
-                if not meetings:
-                    self.log("No JC hrefs worked, trying fallback...")
-                    full_lines = await self.get_text_lines(page)
-                    horse_meetings = self._find_section(
-                        full_lines, 'Horse Racing', 'Greyhounds')
-                    if not horse_meetings:
-                        horse_meetings = self._find_meetings_alt(
-                            full_lines, 'Jockey Challenge')
-                    self.log(f"Fallback: {len(horse_meetings)} meetings")
-
-                    for meeting in horse_meetings[:MAX_MEETINGS_PER_SCRAPER]:
-                        try:
-                            # Click via JS - find <a> containing meeting name
-                            clicked = await page.evaluate(
-                                r'''(name) => {
-                                    const links = document.querySelectorAll('a');
-                                    for (const a of links) {
-                                        const t = (a.innerText || '').toLowerCase();
-                                        if (t.includes('jockey challenge')
-                                            && t.includes(name.toLowerCase())) {
-                                            a.click();
-                                            return true;
-                                        }
-                                    }
-                                    return false;
-                                }''', meeting)
-                            if not clicked:
-                                continue
-                            self.log(f"JS-clicked JC for {meeting}")
                             await random_delay(2.0, 3.0)
-                            for _ in range(3):
-                                det_lines = await self.get_text_lines(page)
-                                if len(det_lines) > 15:
-                                    break
-                                await random_delay(1.5, 2.5)
-                            jockeys = self._parse_odds(det_lines)
-                            if jockeys:
-                                meetings.append({
-                                    'meeting': meeting.upper(),
-                                    'type': 'jockey',
-                                    'jockeys': jockeys,
-                                    'source': 'ladbrokes',
-                                    'country': get_country(meeting)
-                                })
-                                self.log(f"✅ {meeting}: {len(jockeys)}")
-                            await self.safe_goto(page, extras_url)
-                            await random_delay(1.5, 2.5)
-                        except Exception as e:
-                            self.log(f"⚠️ {meeting}: {str(e)[:40]}")
+                            await page.evaluate('window.scrollBy(0, 500)')
+                        if self.is_page_blocked(lines):
+                            self.log(f"Blocked at {jc_url}")
+                            continue
+                        # Scroll to load lazy content
+                        for _ in range(6):
+                            await page.evaluate('window.scrollBy(0, 600)')
+                            await random_delay(0.4, 0.7)
+                        lines = await self.get_text_lines(page)
+                        page_text = ' '.join(lines).lower()
+                        if 'jockey challenge' in page_text or 'jockey' in page_text:
+                            self.log(f"JC page loaded at {jc_url}: "
+                                     f"{len(lines)} lines")
+                            # Parse meetings directly from this page
+                            jc_meetings = self._find_meetings_alt(
+                                lines, 'Jockey Challenge')
+                            if not jc_meetings:
+                                # Try section-based finding
+                                jc_meetings = self._find_section(
+                                    lines, 'Horse Racing', 'Greyhounds')
+                            self.log(f"Direct JC page: {len(jc_meetings)} "
+                                     f"meetings found")
+
+                            # Find individual meeting links
+                            jc_hrefs = await page.evaluate(r'''() => {
+                                const results = [];
+                                document.querySelectorAll('a').forEach(a => {
+                                    const href = a.href || '';
+                                    const text = (a.innerText || '').trim();
+                                    const lh = href.toLowerCase();
+                                    const lt = text.toLowerCase();
+                                    if (lh.includes('jockey-challenge')
+                                        || (lt.includes('jockey challenge')
+                                            && !lt.includes('horse racing')
+                                            && text.length < 80)) {
+                                        results.push(
+                                            {href: href, text: text});
+                                    }
+                                });
+                                return results;
+                            }''')
+                            self.log(f"Found {len(jc_hrefs)} JC links")
+
+                            # Try to parse odds directly (all-in-one page)
+                            all_odds = self._parse_odds(lines)
+                            if all_odds and jc_meetings:
+                                # If we have both names and odds on one page
+                                # assume it's all from one meeting
+                                if len(jc_meetings) == 1:
+                                    meetings.append({
+                                        'meeting': jc_meetings[0].upper(),
+                                        'type': 'jockey',
+                                        'jockeys': all_odds,
+                                        'source': 'ladbrokes',
+                                        'country': get_country(
+                                            jc_meetings[0])
+                                    })
+                                    self.log(f"✅ {jc_meetings[0]}: "
+                                             f"{len(all_odds)} jockeys")
+
+                            # Navigate to each meeting link
+                            base_url = page.url
+                            for jc in jc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
+                                try:
+                                    href = jc['href']
+                                    text = jc['text']
+                                    meeting_name = None
+                                    for pat in [
+                                        r'Jockey Challenge\s*[-–]\s*'
+                                        r'(\w[\w\s]+)',
+                                        r'(\w[\w\s]+?)\s*[-–]\s*'
+                                        r'Jockey Challenge',
+                                    ]:
+                                        m = re.search(pat, text)
+                                        if m:
+                                            meeting_name = m.group(1).strip()
+                                            break
+                                    if not meeting_name:
+                                        hm = re.search(
+                                            r'jockey-challenge[/-](\w+)',
+                                            href.lower())
+                                        if hm:
+                                            meeting_name = (
+                                                hm.group(1).title())
+                                    if not meeting_name:
+                                        meeting_name = text[:30]
+                                    meeting_name = re.sub(
+                                        r'keyboard_arrow\w*', '',
+                                        meeting_name).strip()
+                                    meeting_name = meeting_name.rstrip(' -–')
+                                    if (not meeting_name
+                                            or len(meeting_name) < 3):
+                                        continue
+                                    # Skip if already scraped
+                                    if any(m['meeting'] == meeting_name.upper()
+                                           for m in meetings):
+                                        continue
+
+                                    self.log(f"JC: {meeting_name} "
+                                             f"({href[:60]})")
+                                    await self.safe_goto(page, href)
+                                    await random_delay(2.0, 3.0)
+                                    for _ in range(3):
+                                        det_lines = (
+                                            await self.get_text_lines(page))
+                                        if len(det_lines) > 15:
+                                            break
+                                        await random_delay(1.5, 2.5)
+                                    jockeys = self._parse_odds(det_lines)
+                                    if jockeys:
+                                        meetings.append({
+                                            'meeting': meeting_name.upper(),
+                                            'type': 'jockey',
+                                            'jockeys': jockeys,
+                                            'source': 'ladbrokes',
+                                            'country': get_country(
+                                                meeting_name)
+                                        })
+                                        self.log(f"✅ {meeting_name}: "
+                                                 f"{len(jockeys)} jockeys")
+                                    else:
+                                        self.log(f"⚠️ {meeting_name}: "
+                                                 f"parsed 0 jockeys")
+                                    await self.safe_goto(page, base_url)
+                                    await random_delay(2.0, 3.0)
+                                except Exception as e:
+                                    self.log(f"⚠️ JC href: {str(e)[:50]}")
+
+                            if meetings:
+                                break  # Got data from direct URL
+                    except Exception as e:
+                        self.log(f"Direct JC URL failed: {str(e)[:50]}")
+
+                # === Strategy 2: Extras page fallback ===
+                if not meetings:
+                    self.log("Direct JC URL didn't work, trying extras...")
+                    lines = await self._load_extras_page(page)
+                    if not self.is_page_blocked(lines) and len(lines) >= 15:
+                        self.log(f"Extras page: {len(lines)} lines")
+                        # Expand accordions
+                        expanded = await page.evaluate(r'''() => {
+                            let count = 0;
+                            document.querySelectorAll(
+                                '[class*="arrow"], [class*="expand"],'
+                                + ' [class*="accordion"], [class*="toggle"]'
+                            ).forEach(el => { el.click(); count++; });
+                            const allEls = document.querySelectorAll('*');
+                            allEls.forEach(el => {
+                                const t = el.textContent.trim();
+                                if (t === 'keyboard_arrow_down'
+                                        && el.previousElementSibling) {
+                                    el.previousElementSibling.click();
+                                    count++;
+                                }
+                            });
+                            return count;
+                        }''')
+                        self.log(f"Expanded {expanded} accordions")
+                        await random_delay(3.0, 5.0)
+                        for _ in range(6):
+                            await page.evaluate('window.scrollBy(0, 600)')
+                            await random_delay(0.4, 0.7)
+
+                        # Find JC links
+                        jc_hrefs = await page.evaluate(r'''() => {
+                            const results = [];
+                            document.querySelectorAll('a').forEach(a => {
+                                const href = a.href || '';
+                                const text = (a.innerText || '').trim();
+                                const lh = href.toLowerCase();
+                                const lt = text.toLowerCase();
+                                if (lh.includes('jockey-challenge')
+                                    || (lt.includes('jockey challenge')
+                                        && !lt.includes('horse racing')
+                                        && text.length < 80)) {
+                                    results.push({href: href, text: text});
+                                }
+                            });
+                            return results;
+                        }''')
+                        self.log(f"Extras: {len(jc_hrefs)} JC links")
+                        extras_url = page.url
+                        for jc in jc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
+                            try:
+                                href = jc['href']
+                                text = jc['text']
+                                meeting_name = None
+                                for pat in [
+                                    r'Jockey Challenge\s*[-–]\s*(\w[\w\s]+)',
+                                    r'(\w[\w\s]+?)\s*[-–]\s*Jockey Challenge',
+                                ]:
+                                    m = re.search(pat, text)
+                                    if m:
+                                        meeting_name = m.group(1).strip()
+                                        break
+                                if not meeting_name:
+                                    hm = re.search(
+                                        r'jockey-challenge-(\w+)',
+                                        href.lower())
+                                    if hm:
+                                        meeting_name = hm.group(1).title()
+                                if not meeting_name:
+                                    meeting_name = text[:30]
+                                meeting_name = re.sub(
+                                    r'keyboard_arrow\w*', '',
+                                    meeting_name).strip()
+                                meeting_name = meeting_name.rstrip(' -–')
+                                if (not meeting_name
+                                        or len(meeting_name) < 3):
+                                    continue
+
+                                self.log(f"JC: {meeting_name} ({href[:60]})")
+                                await self.safe_goto(page, href)
+                                await random_delay(2.0, 3.0)
+                                for _ in range(3):
+                                    det_lines = (
+                                        await self.get_text_lines(page))
+                                    if len(det_lines) > 15:
+                                        break
+                                    await random_delay(1.5, 2.5)
+                                jockeys = self._parse_odds(det_lines)
+                                if jockeys:
+                                    meetings.append({
+                                        'meeting': meeting_name.upper(),
+                                        'type': 'jockey',
+                                        'jockeys': jockeys,
+                                        'source': 'ladbrokes',
+                                        'country': get_country(meeting_name)
+                                    })
+                                    self.log(f"✅ {meeting_name}: "
+                                             f"{len(jockeys)} jockeys")
+                                await self.safe_goto(page, extras_url)
+                                await random_delay(2.0, 3.0)
+                            except Exception as e:
+                                self.log(f"⚠️ JC href: {str(e)[:50]}")
+
+                        # Fallback: text-based meeting discovery
+                        if not meetings:
+                            self.log("No JC hrefs, trying text fallback...")
+                            full_lines = await self.get_text_lines(page)
+                            horse_meetings = self._find_section(
+                                full_lines, 'Horse Racing', 'Greyhounds')
+                            if not horse_meetings:
+                                horse_meetings = self._find_meetings_alt(
+                                    full_lines, 'Jockey Challenge')
+                            self.log(f"Fallback: {len(horse_meetings)}")
+                            for meeting in (
+                                    horse_meetings[:MAX_MEETINGS_PER_SCRAPER]):
+                                try:
+                                    clicked = await page.evaluate(
+                                        r'''(name) => {
+                                            const links =
+                                                document.querySelectorAll('a');
+                                            for (const a of links) {
+                                                const t = (a.innerText || '')
+                                                    .toLowerCase();
+                                                if (t.includes(
+                                                        'jockey challenge')
+                                                    && t.includes(
+                                                        name.toLowerCase())) {
+                                                    a.click();
+                                                    return true;
+                                                }
+                                            }
+                                            return false;
+                                        }''', meeting)
+                                    if not clicked:
+                                        continue
+                                    self.log(f"JS-clicked JC: {meeting}")
+                                    await random_delay(2.0, 3.0)
+                                    for _ in range(3):
+                                        det_lines = (
+                                            await self.get_text_lines(page))
+                                        if len(det_lines) > 15:
+                                            break
+                                        await random_delay(1.5, 2.5)
+                                    jockeys = self._parse_odds(det_lines)
+                                    if jockeys:
+                                        meetings.append({
+                                            'meeting': meeting.upper(),
+                                            'type': 'jockey',
+                                            'jockeys': jockeys,
+                                            'source': 'ladbrokes',
+                                            'country': get_country(meeting)
+                                        })
+                                        self.log(f"✅ {meeting}: "
+                                                 f"{len(jockeys)}")
+                                    await self.safe_goto(page, extras_url)
+                                    await random_delay(1.5, 2.5)
+                                except Exception as e:
+                                    self.log(f"⚠️ {meeting}: "
+                                             f"{str(e)[:40]}")
             finally:
                 await self.close_browser()
             return meetings
@@ -1140,154 +1359,250 @@ class LadbrokesScraper(BaseScraper):
                 page = await self.new_page()
                 self.log("Starting driver...")
 
-                lines = await self._load_extras_page(page)
-                if self.is_page_blocked(lines):
-                    self.log("Page appears blocked")
-                    return []
-
-                self.log(f"Extras page loaded: {len(lines)} lines")
-                if len(lines) < 15:
-                    return []
-
-                # Expand all accordions
-                await page.evaluate(r'''() => {
-                    document.querySelectorAll(
-                        '[class*="arrow"], [class*="expand"],'
-                        + ' [class*="accordion"], [class*="toggle"]'
-                    ).forEach(el => el.click());
-                    document.querySelectorAll('*').forEach(el => {
-                        if (el.textContent.trim() === 'keyboard_arrow_down'
-                            && el.previousElementSibling)
-                            el.previousElementSibling.click();
-                    });
-                }''')
-                await random_delay(3.0, 5.0)
-                for _ in range(6):
-                    await page.evaluate('window.scrollBy(0, 600)')
-                    await random_delay(0.4, 0.7)
-
-                # Find Driver Challenge <a> tags by href or innerText
-                dc_hrefs = await page.evaluate(r'''() => {
-                    const results = [];
-                    document.querySelectorAll('a').forEach(a => {
-                        const href = a.href || '';
-                        const text = (a.innerText || '').trim();
-                        const lh = href.toLowerCase();
-                        const lt = text.toLowerCase();
-                        if (lh.includes('driver-challenge')
-                            || lh.includes('driver_challenge')
-                            || (lt.includes('driver challenge')
-                                && text.length < 80)
-                            || (lt.includes('driver watch')
-                                && text.length < 80)) {
-                            results.push({href: href, text: text});
-                        }
-                    });
-                    return results;
-                }''')
-                self.log(f"Found {len(dc_hrefs)} DC links")
-
-                # If no DC links, try finding harness meetings from text
-                # and build direct URLs
-                if not dc_hrefs:
-                    full_lines = await self.get_text_lines(page)
-                    harness_meetings = self._find_harness(full_lines)
-                    if not harness_meetings:
-                        harness_meetings = self._find_meetings_alt(
-                            full_lines, 'Driver Challenge')
-                    self.log(f"Fallback harness meetings: {len(harness_meetings)}")
-                    # Log page content for debugging
-                    for i, l in enumerate(full_lines):
-                        ll = l.lower()
-                        if any(kw in ll for kw in ['driver', 'harness', 'challenge']):
-                            self.log(f"  DC-DBG [{i}]: {l[:100]}")
-                    for hm in harness_meetings[:MAX_MEETINGS_PER_SCRAPER]:
-                        dc_hrefs.append({
-                            'href': '',
-                            'text': f'Driver Challenge - {hm}',
-                            '_click_meeting': hm
-                        })
-
-                extras_url = page.url
-
-                for dc in dc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
+                # === Strategy 1: Direct /racing/driver-challenge URL ===
+                dc_direct_urls = [
+                    'https://www.ladbrokes.com.au/racing/driver-challenge',
+                    'https://www.neds.com.au/racing/driver-challenge',
+                ]
+                for dc_url in dc_direct_urls:
                     try:
-                        href = dc['href']
-                        text = dc['text']
-                        meeting_name = None
-                        for pat in [
-                            r'Driver Challenge\s*[-–]\s*(\w[\w\s]+)',
-                            r'(\w[\w\s]+?)\s*[-–]\s*Driver Challenge',
-                        ]:
-                            m = re.search(pat, text)
-                            if m:
-                                meeting_name = m.group(1).strip()
+                        await self.safe_goto(
+                            page, dc_url.rsplit('/racing/', 1)[0])
+                        await random_delay(2.0, 4.0)
+                        for sel in ['text="Accept"', 'text="OK"',
+                                    'button:has-text("Accept")',
+                                    'text="I am 18+"',
+                                    '[aria-label="Close"]']:
+                            try:
+                                el = page.locator(sel).first
+                                if await el.count() > 0:
+                                    await el.click(timeout=2000)
+                                    await random_delay(0.3, 0.5)
+                            except Exception:
+                                pass
+                        await self.safe_goto(page, dc_url)
+                        await random_delay(3.0, 5.0)
+                        for attempt in range(5):
+                            lines = await self.get_text_lines(page)
+                            if len(lines) > 15:
                                 break
-                        if not meeting_name:
-                            hm = re.search(
-                                r'driver-challenge-(\w+)', href.lower())
-                            if hm:
-                                meeting_name = hm.group(1).title()
-                        if not meeting_name:
-                            meeting_name = text[:30]
-                        meeting_name = re.sub(
-                            r'keyboard_arrow\w*', '', meeting_name).strip()
-                        meeting_name = re.sub(
-                            r'\d+[smh]$', '', meeting_name).strip()
-                        meeting_name = meeting_name.rstrip(' -–')
-                        if not meeting_name or len(meeting_name) < 3:
+                            await random_delay(2.0, 3.0)
+                            await page.evaluate('window.scrollBy(0, 500)')
+                        if self.is_page_blocked(lines):
                             continue
-
-                        self.log(f"Navigating to DC: {meeting_name}")
-                        # Use href if available, otherwise JS-click
-                        if href:
-                            await self.safe_goto(page, href)
-                        elif dc.get('_click_meeting'):
-                            click_name = dc['_click_meeting']
-                            clicked = await page.evaluate(
-                                r'''(name) => {
-                                    const links = document.querySelectorAll('a');
-                                    for (const a of links) {
-                                        const t = (a.innerText || '').toLowerCase();
-                                        if (t.includes('driver challenge')
-                                            && t.includes(name.toLowerCase())) {
-                                            a.click();
-                                            return true;
-                                        }
-                                        if (t.includes('driver')
-                                            && t.includes(name.toLowerCase())) {
-                                            a.click();
-                                            return true;
-                                        }
+                        for _ in range(6):
+                            await page.evaluate('window.scrollBy(0, 600)')
+                            await random_delay(0.4, 0.7)
+                        lines = await self.get_text_lines(page)
+                        page_text = ' '.join(lines).lower()
+                        if ('driver challenge' in page_text
+                                or 'driver' in page_text):
+                            self.log(f"DC page loaded: {dc_url} "
+                                     f"({len(lines)} lines)")
+                            dc_hrefs = await page.evaluate(r'''() => {
+                                const results = [];
+                                document.querySelectorAll('a').forEach(a => {
+                                    const href = a.href || '';
+                                    const text = (a.innerText||'').trim();
+                                    const lh = href.toLowerCase();
+                                    const lt = text.toLowerCase();
+                                    if (lh.includes('driver-challenge')
+                                        || (lt.includes('driver challenge')
+                                            && text.length < 80)
+                                        || (lt.includes('driver watch')
+                                            && text.length < 80)) {
+                                        results.push(
+                                            {href: href, text: text});
                                     }
-                                    return false;
-                                }''', click_name)
-                            if not clicked:
-                                self.log(f"Could not click {click_name}")
-                                continue
-                        else:
-                            continue
-                        await random_delay(2.0, 3.0)
-                        for _ in range(3):
-                            det_lines = await self.get_text_lines(page)
-                            if len(det_lines) > 15:
+                                });
+                                return results;
+                            }''')
+                            self.log(f"Found {len(dc_hrefs)} DC links")
+                            base_url = page.url
+                            for dc in dc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
+                                try:
+                                    href = dc['href']
+                                    text = dc['text']
+                                    meeting_name = None
+                                    for pat in [
+                                        r'Driver Challenge\s*[-–]\s*'
+                                        r'(\w[\w\s]+)',
+                                        r'(\w[\w\s]+?)\s*[-–]\s*'
+                                        r'Driver Challenge',
+                                    ]:
+                                        m = re.search(pat, text)
+                                        if m:
+                                            meeting_name = (
+                                                m.group(1).strip())
+                                            break
+                                    if not meeting_name:
+                                        hm = re.search(
+                                            r'driver-challenge[/-](\w+)',
+                                            href.lower())
+                                        if hm:
+                                            meeting_name = (
+                                                hm.group(1).title())
+                                    if not meeting_name:
+                                        meeting_name = text[:30]
+                                    meeting_name = re.sub(
+                                        r'keyboard_arrow\w*', '',
+                                        meeting_name).strip()
+                                    meeting_name = meeting_name.rstrip(' -–')
+                                    if (not meeting_name
+                                            or len(meeting_name) < 3):
+                                        continue
+                                    self.log(f"DC: {meeting_name}")
+                                    await self.safe_goto(page, href)
+                                    await random_delay(2.0, 3.0)
+                                    for _ in range(3):
+                                        det_lines = (
+                                            await self.get_text_lines(page))
+                                        if len(det_lines) > 15:
+                                            break
+                                        await random_delay(1.5, 2.5)
+                                    drivers = self._parse_odds(det_lines)
+                                    if drivers:
+                                        meetings.append({
+                                            'meeting': meeting_name.upper(),
+                                            'type': 'driver',
+                                            'drivers': drivers,
+                                            'source': 'ladbrokes',
+                                            'country': get_country(
+                                                meeting_name)
+                                        })
+                                        self.log(f"✅ {meeting_name}: "
+                                                 f"{len(drivers)} drivers")
+                                    await self.safe_goto(page, base_url)
+                                    await random_delay(1.5, 2.5)
+                                except Exception as e:
+                                    self.log(f"⚠️ DC: {str(e)[:50]}")
+                            if meetings:
                                 break
-                            await random_delay(1.5, 2.5)
-                        drivers = self._parse_odds(det_lines)
-                        if drivers:
-                            meetings.append({
-                                'meeting': meeting_name.upper(),
-                                'type': 'driver',
-                                'drivers': drivers,
-                                'source': 'ladbrokes',
-                                'country': get_country(meeting_name)
-                            })
-                            self.log(
-                                f"✅ {meeting_name} driver: {len(drivers)}")
-                        await self.safe_goto(page, extras_url)
-                        await random_delay(1.5, 2.5)
                     except Exception as e:
-                        self.log(f"⚠️ DC error: {str(e)[:50]}")
+                        self.log(f"Direct DC URL failed: {str(e)[:50]}")
+
+                # === Strategy 2: Extras page fallback ===
+                if not meetings:
+                    self.log("Direct DC didn't work, trying extras...")
+                    lines = await self._load_extras_page(page)
+                    if not self.is_page_blocked(lines) and len(lines) >= 15:
+                        await page.evaluate(r'''() => {
+                            document.querySelectorAll(
+                                '[class*="arrow"], [class*="expand"],'
+                                + ' [class*="accordion"]'
+                            ).forEach(el => el.click());
+                            document.querySelectorAll('*').forEach(el => {
+                                if (el.textContent.trim()
+                                        === 'keyboard_arrow_down'
+                                    && el.previousElementSibling)
+                                    el.previousElementSibling.click();
+                            });
+                        }''')
+                        await random_delay(3.0, 5.0)
+                        for _ in range(6):
+                            await page.evaluate('window.scrollBy(0, 600)')
+                            await random_delay(0.4, 0.7)
+                        dc_hrefs = await page.evaluate(r'''() => {
+                            const results = [];
+                            document.querySelectorAll('a').forEach(a => {
+                                const href = a.href || '';
+                                const text = (a.innerText || '').trim();
+                                const lh = href.toLowerCase();
+                                const lt = text.toLowerCase();
+                                if (lh.includes('driver-challenge')
+                                    || (lt.includes('driver challenge')
+                                        && text.length < 80)
+                                    || (lt.includes('driver watch')
+                                        && text.length < 80)) {
+                                    results.push({href: href, text: text});
+                                }
+                            });
+                            return results;
+                        }''')
+                        self.log(f"Extras: {len(dc_hrefs)} DC links")
+                        if not dc_hrefs:
+                            full_lines = await self.get_text_lines(page)
+                            harness = self._find_harness(full_lines)
+                            if not harness:
+                                harness = self._find_meetings_alt(
+                                    full_lines, 'Driver Challenge')
+                            self.log(f"Harness fallback: {len(harness)}")
+                            for hm in harness[:MAX_MEETINGS_PER_SCRAPER]:
+                                dc_hrefs.append({
+                                    'href': '',
+                                    'text': f'Driver Challenge - {hm}',
+                                    '_click_meeting': hm
+                                })
+                        extras_url = page.url
+                        for dc in dc_hrefs[:MAX_MEETINGS_PER_SCRAPER]:
+                            try:
+                                href = dc['href']
+                                text = dc['text']
+                                meeting_name = None
+                                for pat in [
+                                    r'Driver Challenge\s*[-–]\s*(\w[\w\s]+)',
+                                    r'(\w[\w\s]+?)\s*[-–]\s*Driver Challenge',
+                                ]:
+                                    m = re.search(pat, text)
+                                    if m:
+                                        meeting_name = m.group(1).strip()
+                                        break
+                                if not meeting_name:
+                                    meeting_name = text[:30]
+                                meeting_name = re.sub(
+                                    r'keyboard_arrow\w*', '',
+                                    meeting_name).strip()
+                                meeting_name = meeting_name.rstrip(' -–')
+                                if (not meeting_name
+                                        or len(meeting_name) < 3):
+                                    continue
+                                self.log(f"DC: {meeting_name}")
+                                if href:
+                                    await self.safe_goto(page, href)
+                                elif dc.get('_click_meeting'):
+                                    cn = dc['_click_meeting']
+                                    clicked = await page.evaluate(
+                                        r'''(name) => {
+                                            const links =
+                                                document.querySelectorAll('a');
+                                            for (const a of links) {
+                                                const t = (a.innerText||'')
+                                                    .toLowerCase();
+                                                if (t.includes('driver')
+                                                    && t.includes(
+                                                        name.toLowerCase())){
+                                                    a.click();
+                                                    return true;
+                                                }
+                                            }
+                                            return false;
+                                        }''', cn)
+                                    if not clicked:
+                                        continue
+                                else:
+                                    continue
+                                await random_delay(2.0, 3.0)
+                                for _ in range(3):
+                                    det_lines = (
+                                        await self.get_text_lines(page))
+                                    if len(det_lines) > 15:
+                                        break
+                                    await random_delay(1.5, 2.5)
+                                drivers = self._parse_odds(det_lines)
+                                if drivers:
+                                    meetings.append({
+                                        'meeting': meeting_name.upper(),
+                                        'type': 'driver',
+                                        'drivers': drivers,
+                                        'source': 'ladbrokes',
+                                        'country': get_country(meeting_name)
+                                    })
+                                    self.log(f"✅ {meeting_name}: "
+                                             f"{len(drivers)} drivers")
+                                await self.safe_goto(page, extras_url)
+                                await random_delay(1.5, 2.5)
+                            except Exception as e:
+                                self.log(f"⚠️ DC: {str(e)[:50]}")
             finally:
                 await self.close_browser()
             return meetings
@@ -1377,31 +1692,47 @@ class ElitebetScraper(BaseScraper):
                 self.log("Starting...")
 
                 # Visit home page first to establish session + cookies
-                try:
-                    await self.safe_goto(page, 'https://www.elitebet.com.au')
-                    await random_delay(3.0, 5.0)
-                    # Dismiss cookie/age modals
-                    for sel in ['text="Accept"', 'text="OK"', 'text="Continue"',
-                                'button:has-text("Accept")', 'text="I am 18+"',
-                                'button:has-text("I am")', '[aria-label="Close"]']:
-                        try:
-                            el = page.locator(sel).first
-                            if await el.count() > 0:
-                                await el.click(timeout=2000)
-                                await random_delay(0.5, 1.0)
-                        except Exception:
-                            pass
-                    home_lines = await self.get_text_lines(page)
-                    self.log(f"Home page: {len(home_lines)} lines")
-                    if self.is_page_blocked(home_lines):
-                        self.log("Blocked at home page")
-                        self.log_diagnostics(home_lines, "home-blocked")
-                        return []
-                except Exception as e:
-                    self.log(f"Home page failed: {str(e)[:50]}")
+                # Elitebet rebranded to Neds - try both domains
+                home_urls = [
+                    'https://www.neds.com.au',
+                    'https://www.elitebet.com.au',
+                ]
+                home_ok = False
+                for home_url in home_urls:
+                    try:
+                        await self.safe_goto(page, home_url)
+                        await random_delay(3.0, 5.0)
+                        for sel in ['text="Accept"', 'text="OK"',
+                                    'text="Continue"',
+                                    'button:has-text("Accept")',
+                                    'text="I am 18+"',
+                                    'button:has-text("I am")',
+                                    '[aria-label="Close"]']:
+                            try:
+                                el = page.locator(sel).first
+                                if await el.count() > 0:
+                                    await el.click(timeout=2000)
+                                    await random_delay(0.5, 1.0)
+                            except Exception:
+                                pass
+                        home_lines = await self.get_text_lines(page)
+                        self.log(f"Home page {home_url}: "
+                                 f"{len(home_lines)} lines")
+                        if not self.is_page_blocked(home_lines):
+                            home_ok = True
+                            break
+                    except Exception as e:
+                        self.log(f"Home failed {home_url}: {str(e)[:40]}")
+                if not home_ok:
+                    self.log("All home pages blocked")
+                    return []
 
-                # Try multiple URLs including extras/specials paths
+                # Try multiple URLs including neds.com.au + elitebet.com.au
                 racing_urls = [
+                    'https://www.neds.com.au/racing/jockey-challenge',
+                    'https://www.neds.com.au/racing/extras',
+                    'https://www.neds.com.au/racing/specials',
+                    'https://www.neds.com.au/racing',
                     'https://www.elitebet.com.au/racing/extras',
                     'https://www.elitebet.com.au/racing/specials',
                     'https://www.elitebet.com.au/racing',
@@ -1560,10 +1891,13 @@ class PointsBetScraper(BaseScraper):
         specials_kw = ('Thoroughbred Specials' if race_type == 'jockey'
                        else 'Harness Specials')
 
-        # Approach 1: Direct specials URLs
+        # Approach 1: Direct specials/challenge URLs
         specials_urls = [
-            'https://pointsbet.com.au/racing?search=specials',
+            f'https://pointsbet.com.au/racing/{race_type}-challenge',
             'https://pointsbet.com.au/racing/specials',
+            'https://pointsbet.com.au/racing?search=specials',
+            'https://pointsbet.com.au/racing/extras',
+            'https://pointsbet.com.au/racing?tab=specials',
         ]
         for url in specials_urls:
             try:
@@ -2490,20 +2824,25 @@ class SportsbetScraper(BaseScraper):
         except Exception:
             pass
 
-        # Try 2: Direct racing URL
-        try:
-            await self.safe_goto(
-                page, 'https://www.sportsbet.com.au/horse-racing')
-            await random_delay(1.5, 3.0)
-            text = await page.evaluate('document.body.innerText')
-            lines = [l.strip() for l in text.split('\n') if l.strip()]
-            if not self.is_page_blocked(lines):
-                return text
-            self.log("Page appears blocked")
-            self.log_diagnostics(lines, "blocked")
-        except Exception as e:
-            self.log(f"Navigation failed: {str(e)[:50]}")
+        # Try 2: Direct racing URLs (multiple possible paths)
+        racing_urls = [
+            'https://www.sportsbet.com.au/horse-racing',
+            'https://www.sportsbet.com.au/racing',
+            'https://www.sportsbet.com.au/horse-racing/extras',
+        ]
+        for racing_url in racing_urls:
+            try:
+                await self.safe_goto(page, racing_url)
+                await random_delay(1.5, 3.0)
+                text = await page.evaluate('document.body.innerText')
+                lines = [l.strip() for l in text.split('\n') if l.strip()]
+                if not self.is_page_blocked(lines) and len(lines) > 10:
+                    self.log(f"Racing page loaded from {racing_url}")
+                    return text
+            except Exception:
+                pass
 
+        self.log("All racing URLs failed or blocked")
         return ''
 
     async def _click_extras_tab(self, page) -> bool:
@@ -2543,6 +2882,37 @@ class SportsbetScraper(BaseScraper):
         """Navigate to Sportsbet Specials/Extras page.
         'Specials' (formerly 'Extras') is a client-side tab in the SPA."""
 
+        # Content keywords that indicate we found the right page
+        content_keywords = ['Challenge', 'Jockey Watch', 'Driver Watch',
+                           'Jockey Challenge', 'Driver Challenge']
+
+        def has_content(t):
+            return any(kw in t for kw in content_keywords)
+
+        # Step 0: Try direct extras/specials URLs first
+        direct_urls = [
+            'https://www.sportsbet.com.au/horse-racing/extras',
+            'https://www.sportsbet.com.au/horse-racing?tab=extras',
+            'https://www.sportsbet.com.au/horse-racing?tab=specials',
+        ]
+        for durl in direct_urls:
+            try:
+                await self.safe_goto(page, durl)
+                await random_delay(2.0, 4.0)
+                for _ in range(6):
+                    await page.evaluate('window.scrollBy(0, 600)')
+                    await random_delay(0.3, 0.5)
+                text = await page.evaluate('document.body.innerText')
+                lines = [l.strip() for l in text.split('\n') if l.strip()]
+                if not self.is_page_blocked(lines) and has_content(text):
+                    self.log(f"Found extras content at {durl}")
+                    return text
+                if not self.is_page_blocked(lines) and len(lines) > 10:
+                    self.log(f"Loaded {durl} ({len(lines)} lines) "
+                             f"but no challenge content")
+            except Exception:
+                pass
+
         # Step 1: Load the racing page
         text = await self._load_racing(page)
         if not text:
@@ -2553,13 +2923,6 @@ class SportsbetScraper(BaseScraper):
 
         # Step 2: Wait for SPA to fully render tabs
         await random_delay(1.0, 2.0)
-
-        # Content keywords that indicate we found the right page
-        content_keywords = ['Challenge', 'Jockey Watch', 'Driver Watch',
-                           'Jockey Challenge', 'Driver Challenge']
-
-        def has_content(t):
-            return any(kw in t for kw in content_keywords)
 
         # Step 3: Try clicking Specials/Extras tab
         if await self._click_extras_tab(page):
